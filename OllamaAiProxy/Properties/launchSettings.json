@@ -1,0 +1,13 @@
+{
+  "profiles": {
+    "OllamaAiProxy": {
+      "commandName": "Project",
+      "launchBrowser": false,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "PORT": "11434"
+      },
+      "applicationUrl": "http://localhost:11434"
+    }
+  }
+}

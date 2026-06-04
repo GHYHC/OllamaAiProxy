@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OllamaAiProxy Chat Test</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --line: #d9e0ea;
+      --text: #172033;
+      --muted: #687387;
+      --brand: #0f766e;
+      --brand-dark: #115e59;
+      --danger: #b42318;
+      --assistant: #eef7f5;
+      --user: #eaf1ff;
+      font-family: "Segoe UI", Arial, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    .shell {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      min-height: 100vh;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 16px 24px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 650;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    label {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    select,
+    textarea,
+    button {
+      font: inherit;
+    }
+
+    select {
+      min-width: 260px;
+      height: 38px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+    }
+
+    button {
+      height: 38px;
+      padding: 0 14px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: var(--brand);
+      color: #fff;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    button.secondary {
+      background: #fff;
+      color: var(--text);
+      border-color: var(--line);
+    }
+
+    button:disabled {
+      opacity: .58;
+      cursor: not-allowed;
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 16px;
+      padding: 16px 24px;
+      min-height: 0;
+    }
+
+    .chat,
+    .side {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      min-height: 0;
+    }
+
+    .chat {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .messages {
+      flex: 1;
+      overflow: auto;
+      padding: 18px;
+    }
+
+    .message {
+      max-width: 860px;
+      margin: 0 0 14px;
+      padding: 12px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .message.user {
+      margin-left: auto;
+      background: var(--user);
+    }
+
+    .message.assistant {
+      background: var(--assistant);
+    }
+
+    .message.system {
+      max-width: none;
+      background: #fff7ed;
+      color: #7c2d12;
+    }
+
+    .role {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .composer {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      padding: 12px;
+      border-top: 1px solid var(--line);
+      background: #fbfcfe;
+    }
+
+    textarea {
+      min-height: 76px;
+      max-height: 220px;
+      resize: vertical;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--text);
+    }
+
+    .send-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-width: 96px;
+    }
+
+    .side {
+      padding: 16px;
+      overflow: auto;
+    }
+
+    .status {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .status strong {
+      color: var(--text);
+    }
+
+    .raw {
+      margin-top: 12px;
+      padding: 10px;
+      border-radius: 6px;
+      background: #111827;
+      color: #e5e7eb;
+      overflow: auto;
+      font-family: Consolas, "SFMono-Regular", monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 300px;
+    }
+
+    .error {
+      color: var(--danger);
+    }
+
+    @media (max-width: 900px) {
+      header,
+      main {
+        padding-left: 12px;
+        padding-right: 12px;
+      }
+
+      header,
+      .toolbar {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      select {
+        min-width: 100%;
+      }
+
+      main {
+        grid-template-columns: 1fr;
+      }
+
+      .composer {
+        grid-template-columns: 1fr;
+      }
+
+      .send-stack {
+        flex-direction: row;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <h1>OllamaAiProxy 聊天测试</h1>
+      <div class="toolbar">
+        <label for="modelSelect">模型</label>
+        <select id="modelSelect"></select>
+        <button id="reloadModels" class="secondary" type="button">刷新模型</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="chat" aria-label="聊天窗口">
+        <div id="messages" class="messages"></div>
+        <form id="chatForm" class="composer">
+          <textarea id="prompt" placeholder="输入一句话测试接口，例如：你好，简单介绍一下你自己。" required></textarea>
+          <div class="send-stack">
+            <button id="send" type="submit">发送</button>
+            <button id="clear" class="secondary" type="button">清空</button>
+          </div>
+        </form>
+      </section>
+
+      <aside class="side">
+        <h2 style="margin:0;font-size:16px;">接口状态</h2>
+        <div class="status">
+          <div>服务地址：<strong id="baseUrl"></strong></div>
+          <div>健康检查：<strong id="health">未检测</strong></div>
+          <div>模型数量：<strong id="modelCount">0</strong></div>
+          <div>请求耗时：<strong id="latency">-</strong></div>
+        </div>
+        <div id="raw" class="raw">等待请求...</div>
+      </aside>
+    </main>
+  </div>
+
+  <script>
+    const els = {
+      baseUrl: document.getElementById("baseUrl"),
+      chatForm: document.getElementById("chatForm"),
+      clear: document.getElementById("clear"),
+      health: document.getElementById("health"),
+      latency: document.getElementById("latency"),
+      messages: document.getElementById("messages"),
+      modelCount: document.getElementById("modelCount"),
+      modelSelect: document.getElementById("modelSelect"),
+      prompt: document.getElementById("prompt"),
+      raw: document.getElementById("raw"),
+      reloadModels: document.getElementById("reloadModels"),
+      send: document.getElementById("send")
+    };
+
+    const state = {
+      messages: [
+        { role: "system", content: "你是一个简洁的中文助手，用于验证 OllamaAiProxy 是否可用。" }
+      ]
+    };
+
+    els.baseUrl.textContent = location.origin;
+
+    function setRaw(value, isError = false) {
+      els.raw.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+      els.raw.classList.toggle("error", isError);
+    }
+
+    function appendMessage(role, content) {
+      const node = document.createElement("div");
+      node.className = `message ${role}`;
+      const label = document.createElement("span");
+      label.className = "role";
+      label.textContent = role;
+      node.append(label, document.createTextNode(content));
+      els.messages.appendChild(node);
+      els.messages.scrollTop = els.messages.scrollHeight;
+    }
+
+    function setBusy(isBusy) {
+      els.send.disabled = isBusy;
+      els.reloadModels.disabled = isBusy;
+      els.prompt.disabled = isBusy;
+    }
+
+    async function requestJson(url, options) {
+      const response = await fetch(url, options);
+      const text = await response.text();
+      let body = text;
+      try {
+        body = text ? JSON.parse(text) : null;
+      } catch {
+        body = text;
+      }
+
+      if (!response.ok) {
+        const message = typeof body === "object" && body?.error ? body.error : text || response.statusText;
+        const error = new Error(message);
+        error.status = response.status;
+        error.body = body;
+        throw error;
+      }
+
+      return body;
+    }
+
+    async function loadHealth() {
+      try {
+        const health = await requestJson("/health");
+        els.health.textContent = `${health.status || "ok"} / ${health.provider || "unknown"}`;
+      } catch (error) {
+        els.health.textContent = `失败：${error.message}`;
+        els.health.classList.add("error");
+      }
+    }
+
+    async function loadModels() {
+      els.modelSelect.innerHTML = "<option>加载中...</option>";
+      try {
+        const data = await requestJson("/api/tags");
+        const models = Array.isArray(data?.models) ? data.models : [];
+        els.modelSelect.innerHTML = "";
+
+        for (const item of models) {
+          const option = document.createElement("option");
+          option.value = item.model || item.name;
+          option.textContent = formatModelOption(item);
+          els.modelSelect.appendChild(option);
+        }
+
+        els.modelCount.textContent = String(models.length);
+        setRaw(data);
+
+        if (models.length === 0) {
+          els.modelSelect.innerHTML = "<option value=\"\">没有可用模型</option>";
+        }
+      } catch (error) {
+        els.modelSelect.innerHTML = "<option value=\"\">模型加载失败</option>";
+        els.modelCount.textContent = "0";
+        setRaw(error.body || error.message, true);
+      }
+    }
+
+    function formatModelOption(item) {
+      const name = item.name || item.model || "unknown";
+      const family = item.details?.family || item.details?.families?.[0];
+      const parameterSize = item.details?.parameter_size;
+      const meta = [family, parameterSize].filter(Boolean).join(", ");
+
+      return meta ? `${name} (${meta})` : name;
+    }
+
+    async function sendMessage(content) {
+      const model = els.modelSelect.value;
+      if (!model) {
+        setRaw("请先选择模型。", true);
+        return;
+      }
+
+      state.messages.push({ role: "user", content });
+      appendMessage("user", content);
+      setBusy(true);
+      els.latency.textContent = "请求中...";
+      const started = performance.now();
+
+      try {
+        const data = await requestJson("/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model,
+            stream: false,
+            messages: state.messages
+          })
+        });
+
+        const answer = data?.choices?.[0]?.message?.content || JSON.stringify(data, null, 2);
+        state.messages.push({ role: "assistant", content: answer });
+        appendMessage("assistant", answer);
+        setRaw(data);
+        els.latency.textContent = `${Math.round(performance.now() - started)} ms`;
+      } catch (error) {
+        state.messages.pop();
+        appendMessage("system", `请求失败：${error.message}`);
+        setRaw(error.body || error.message, true);
+        els.latency.textContent = "失败";
+      } finally {
+        setBusy(false);
+        els.prompt.focus();
+      }
+    }
+
+    els.chatForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const content = els.prompt.value.trim();
+      if (!content) return;
+      els.prompt.value = "";
+      await sendMessage(content);
+    });
+
+    els.clear.addEventListener("click", () => {
+      state.messages = state.messages.slice(0, 1);
+      els.messages.innerHTML = "";
+      els.latency.textContent = "-";
+      setRaw("已清空对话。");
+      els.prompt.focus();
+    });
+
+    els.reloadModels.addEventListener("click", loadModels);
+
+    appendMessage("system", "页面已就绪。选择模型后发送消息即可测试 /v1/chat/completions。");
+    loadHealth();
+    loadModels();
+  </script>
+</body>
+</html>
