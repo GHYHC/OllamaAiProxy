@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Microsoft.AspNetCore.Http.Json;
 using OllamaAiProxy.Contracts;
 using OllamaAiProxy.Monitoring;
 using OllamaAiProxy.Providers;
@@ -11,7 +12,16 @@ var port = builder.Configuration.GetValue("PORT", DefaultPort);
 var testPageUrl = $"http://localhost:{port}/";
 builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 
-builder.Services.Configure<RequestLoggingOptions>(builder.Configuration.GetSection(RequestLoggingOptions.SectionName));
+builder.Services.Configure<RequestLoggingOptions>(options =>
+{
+    var section = builder.Configuration.GetSection(RequestLoggingOptions.SectionName);
+    options.Enabled = section.GetValue(nameof(RequestLoggingOptions.Enabled), options.Enabled);
+    options.Directory = section.GetValue(nameof(RequestLoggingOptions.Directory), options.Directory) ?? options.Directory;
+});
+builder.Services.Configure<JsonOptions>(options =>
+{
+    options.SerializerOptions.TypeInfoResolverChain.Insert(0, ApiJsonSerializerContext.Default);
+});
 
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<IReadOnlyList<IAiProvider>>(sp =>
@@ -31,21 +41,19 @@ app.UseStaticFiles();
 // 健康检查只返回本地状态，不访问上游，避免健康探测消耗模型厂商 API。
 app.MapGet("/health", (IAiProviderRegistry registry) =>
 {
-    return Results.Ok(new
-    {
-        status = "ok",
-        providers = registry.Providers.Select(x => new { name = x.Name, family = x.Family })
-    });
+    return Results.Json(new HealthResponse(
+        "ok",
+        registry.Providers.Select(x => new ProviderSummary(x.Name, x.Family)).ToArray()),
+        ApiJsonSerializerContext.Default.HealthResponse);
 });
 
 // Ollama 模型列表接口：把厂商无关的模型元数据转换成 Ollama /api/tags 响应格式。
 app.MapGet("/api/tags", async (IAiProviderRegistry registry, CancellationToken cancellationToken) =>
 {
     var models = await registry.GetAllModelsAsync(cancellationToken);
-    return Results.Json(new
-    {
-        models = models.Select(x => ToOllamaTag(x.Provider, x.Model))
-    });
+    return Results.Json(new OllamaTagsResponse(
+        models.Select(x => ToOllamaTag(x.Provider, x.Model)).ToArray()),
+        ApiJsonSerializerContext.Default.OllamaTagsResponse);
 });
 
 // Ollama 模型详情接口：模型不存在时返回 404，避免客户端误以为已经使用指定模型。
@@ -54,16 +62,18 @@ app.MapPost("/api/show", async (HttpContext context, IAiProviderRegistry registr
     var cancellationToken = context.RequestAborted;
     var modelName = await ReadModelName(context.Request, cancellationToken);
     if (string.IsNullOrWhiteSpace(modelName))
-        return Results.Json(new { error = "model is required" }, statusCode: StatusCodes.Status400BadRequest);
+        return Error("model is required", StatusCodes.Status400BadRequest);
 
     if (!IsExternalModelName(modelName))
-        return Results.Json(new { error = "model must use 'provider/model' format" }, statusCode: StatusCodes.Status400BadRequest);
+        return Error("model must use 'provider/model' format", StatusCodes.Status400BadRequest);
 
     var resolved = await registry.ResolveModelAsync(modelName, cancellationToken);
     if (resolved is null)
-        return Results.Json(new { error = $"model '{modelName}' not found" }, statusCode: StatusCodes.Status404NotFound);
+        return Error($"model '{modelName}' not found", StatusCodes.Status404NotFound);
 
-    return Results.Json(ToOllamaShow(resolved.Value.Provider, resolved.Value.Model));
+    return Results.Json(
+        ToOllamaShow(resolved.Value.Provider, resolved.Value.Model),
+        ApiJsonSerializerContext.Default.OllamaShowResponse);
 });
 
 // OpenAI 兼容聊天接口：provider 负责厂商转发，这一层只做通用校验和响应透传。
@@ -76,7 +86,7 @@ app.MapPost("/v1/chat/completions", async (HttpContext context, IAiProviderRegis
     }
     catch (JsonException)
     {
-        return Results.Json(new { error = "request body must be valid JSON" }, statusCode: StatusCodes.Status400BadRequest);
+        return Error("request body must be valid JSON", StatusCodes.Status400BadRequest);
     }
 
     using (request)
@@ -84,19 +94,19 @@ app.MapPost("/v1/chat/completions", async (HttpContext context, IAiProviderRegis
         var root = request.RootElement;
         var requestedModel = TryGetString(root, "model");
         if (string.IsNullOrWhiteSpace(requestedModel))
-            return Results.Json(new { error = "model is required" }, statusCode: StatusCodes.Status400BadRequest);
+            return Error("model is required", StatusCodes.Status400BadRequest);
 
         if (!IsExternalModelName(requestedModel))
-            return Results.Json(new { error = "model must use 'provider/model' format" }, statusCode: StatusCodes.Status400BadRequest);
+            return Error("model must use 'provider/model' format", StatusCodes.Status400BadRequest);
 
         var resolved = await registry.ResolveModelAsync(requestedModel, context.RequestAborted);
         if (resolved is null)
-            return Results.Json(new { error = $"model '{requestedModel}' not found" }, statusCode: StatusCodes.Status404NotFound);
+            return Error($"model '{requestedModel}' not found", StatusCodes.Status404NotFound);
 
         var provider = resolved.Value.Provider;
         // 图片输入是否允许由 provider 能力决定：OpenAI 可放行，DeepSeek 仍拒绝。
         if (RequestContainsImages(root) && !provider.SupportsImages)
-            return Results.Json(new { error = $"{provider.Name} provider does not support image inputs." }, statusCode: StatusCodes.Status400BadRequest);
+            return Error($"{provider.Name} provider does not support image inputs.", StatusCodes.Status400BadRequest);
 
         var isStream = TryGetBoolean(root, "stream");
         using var upstreamRequest = RewriteModel(request, resolved.Value.UpstreamModel);
@@ -135,6 +145,12 @@ app.Run();
 static bool ShouldOpenTestPage(IConfiguration configuration, IWebHostEnvironment environment) =>
     configuration.GetValue("OpenTestPageOnStart", environment.IsDevelopment());
 
+static IResult Error(string message, int statusCode) =>
+    Results.Json(
+        new ApiErrorResponse(message),
+        ApiJsonSerializerContext.Default.ApiErrorResponse,
+        statusCode: statusCode);
+
 static void OpenBrowser(string url)
 {
     try
@@ -155,12 +171,12 @@ static IReadOnlyList<IAiProvider> CreateProviders(IConfiguration configuration, 
 {
     var providers = new List<IAiProvider>();
 
-    foreach (var options in BindOptionsList<DeepSeekOptions>(configuration.GetSection(DeepSeekOptions.SectionName), new DeepSeekOptions()))
+    foreach (var options in ReadDeepSeekOptions(configuration.GetSection(DeepSeekOptions.SectionName)))
     {
         providers.Add(new DeepSeekProvider(CreateProviderHttpClient(httpClientFactory), options));
     }
 
-    foreach (var options in BindOptionsList<OpenAIOptions>(configuration.GetSection(OpenAIOptions.SectionName), new OpenAIOptions()))
+    foreach (var options in ReadOpenAIOptions(configuration.GetSection(OpenAIOptions.SectionName)))
     {
         providers.Add(new OpenAIProvider(CreateProviderHttpClient(httpClientFactory), options));
     }
@@ -178,18 +194,44 @@ static HttpClient CreateProviderHttpClient(IHttpClientFactory httpClientFactory)
     return client;
 }
 
-static IReadOnlyList<TOptions> BindOptionsList<TOptions>(IConfigurationSection section, TOptions fallback)
-    where TOptions : class, new()
+static IReadOnlyList<DeepSeekOptions> ReadDeepSeekOptions(IConfigurationSection section)
 {
     if (!section.Exists())
-        return Array.Empty<TOptions>();
+        return Array.Empty<DeepSeekOptions>();
 
     if (section.GetChildren().Any(x => int.TryParse(x.Key, out _)))
-        return section.Get<TOptions[]>() ?? Array.Empty<TOptions>();
+        return section.GetChildren().Select(ReadDeepSeekOption).ToArray();
 
-    var single = new TOptions();
-    section.Bind(single);
-    return new[] { single };
+    return new[] { ReadDeepSeekOption(section) };
+}
+
+static DeepSeekOptions ReadDeepSeekOption(IConfiguration section)
+{
+    var options = new DeepSeekOptions();
+    options.Name = section.GetValue(nameof(DeepSeekOptions.Name), options.Name) ?? options.Name;
+    options.BaseUrl = section.GetValue(nameof(DeepSeekOptions.BaseUrl), options.BaseUrl) ?? options.BaseUrl;
+    options.ApiKey = section.GetValue<string?>(nameof(DeepSeekOptions.ApiKey));
+    return options;
+}
+
+static IReadOnlyList<OpenAIOptions> ReadOpenAIOptions(IConfigurationSection section)
+{
+    if (!section.Exists())
+        return Array.Empty<OpenAIOptions>();
+
+    if (section.GetChildren().Any(x => int.TryParse(x.Key, out _)))
+        return section.GetChildren().Select(ReadOpenAIOption).ToArray();
+
+    return new[] { ReadOpenAIOption(section) };
+}
+
+static OpenAIOptions ReadOpenAIOption(IConfiguration section)
+{
+    var options = new OpenAIOptions();
+    options.Name = section.GetValue(nameof(OpenAIOptions.Name), options.Name) ?? options.Name;
+    options.BaseUrl = section.GetValue(nameof(OpenAIOptions.BaseUrl), options.BaseUrl) ?? options.BaseUrl;
+    options.ApiKey = section.GetValue<string?>(nameof(OpenAIOptions.ApiKey));
+    return options;
 }
 
 // 读取 Ollama /api/show 可选的 model 字段；非法 JSON 在这里按“未提供 model”处理。
@@ -210,40 +252,36 @@ static async Task<string?> ReadModelName(HttpRequest request, CancellationToken 
 }
 
 // 将厂商无关模型信息转换成 Ollama /api/tags 中的单个模型项。
-static object ToOllamaTag(IAiProvider provider, AiModel model) => new
-{
-    name = ToExternalModelName(provider, model),
-    model = ToExternalModelName(provider, model),
-    modified_at = model.ModifiedAt,
-    size = model.Size,
-    digest = model.Digest,
-    details = ToOllamaDetails(model.Details)
-};
+static OllamaTag ToOllamaTag(IAiProvider provider, AiModel model) => new(
+    ToExternalModelName(provider, model),
+    ToExternalModelName(provider, model),
+    model.ModifiedAt,
+    model.Size,
+    model.Digest,
+    ToOllamaDetails(model.Details));
 
 // 将厂商无关模型信息转换成 Ollama /api/show 的模型详情响应。
-static object ToOllamaShow(IAiProvider provider, AiModel model) => new
-{
-    license = "",
-    modelfile = "",
-    parameters = $"num_ctx {model.ModelInfo.ContextLength}\nnum_predict {model.ModelInfo.MaxOutputTokens}",
-    template = "",
-    details = ToOllamaDetails(model.Details),
-    model_info = new Dictionary<string, object?>
+static OllamaShowResponse ToOllamaShow(IAiProvider provider, AiModel model) => new(
+    "",
+    "",
+    $"num_ctx {model.ModelInfo.ContextLength}\nnum_predict {model.ModelInfo.MaxOutputTokens}",
+    "",
+    ToOllamaDetails(model.Details),
+    new Dictionary<string, JsonElement>
     {
-        ["general.name"] = model.Id,
-        ["general.display_name"] = model.DisplayName,
-        ["general.architecture"] = model.ModelInfo.Architecture,
-        ["general.parameter_count"] = model.ModelInfo.ParameterCount,
-        [$"{model.ModelInfo.Architecture}.active_parameter_count"] = model.ModelInfo.ActiveParameterCount,
-        [$"{model.ModelInfo.Architecture}.context_length"] = model.ModelInfo.ContextLength,
-        [$"{model.ModelInfo.Architecture}.max_output_tokens"] = model.ModelInfo.MaxOutputTokens,
-        [$"{model.ModelInfo.Architecture}.text_only"] = model.ModelInfo.TextOnly,
-        [$"{model.ModelInfo.Architecture}.deprecated"] = model.ModelInfo.Deprecated,
-        [$"{model.ModelInfo.Architecture}.availability"] = model.ModelInfo.Availability
+        ["general.name"] = JsonString(model.Id),
+        ["general.display_name"] = JsonString(model.DisplayName),
+        ["general.architecture"] = JsonString(model.ModelInfo.Architecture),
+        ["general.parameter_count"] = JsonLong(model.ModelInfo.ParameterCount),
+        [$"{model.ModelInfo.Architecture}.active_parameter_count"] = JsonLong(model.ModelInfo.ActiveParameterCount),
+        [$"{model.ModelInfo.Architecture}.context_length"] = JsonInt(model.ModelInfo.ContextLength),
+        [$"{model.ModelInfo.Architecture}.max_output_tokens"] = JsonInt(model.ModelInfo.MaxOutputTokens),
+        [$"{model.ModelInfo.Architecture}.text_only"] = JsonBool(model.ModelInfo.TextOnly),
+        [$"{model.ModelInfo.Architecture}.deprecated"] = JsonBool(model.ModelInfo.Deprecated),
+        [$"{model.ModelInfo.Architecture}.availability"] = JsonString(model.ModelInfo.Availability)
     },
-    capabilities = model.Capabilities,
-    modified_at = model.ModifiedAt
-};
+    model.Capabilities,
+    model.ModifiedAt);
 
 static string ToExternalModelName(IAiProvider provider, AiModel model) => $"{provider.Name}/{model.Id}";
 
@@ -274,15 +312,25 @@ static JsonDocument RewriteModel(JsonDocument request, string upstreamModel)
     return JsonDocument.Parse(stream);
 }
 
-static object ToOllamaDetails(AiModelDetails details) => new
-{
-    parent_model = details.ParentModel,
-    format = details.Format,
-    family = details.Family,
-    families = details.Families,
-    parameter_size = details.ParameterSize,
-    quantization_level = details.QuantizationLevel
-};
+static OllamaDetails ToOllamaDetails(AiModelDetails details) => new(
+    details.ParentModel,
+    details.Format,
+    details.Family,
+    details.Families,
+    details.ParameterSize,
+    details.QuantizationLevel);
+
+static JsonElement JsonString(string value) =>
+    JsonSerializer.SerializeToElement(value, ApiJsonSerializerContext.Default.String);
+
+static JsonElement JsonLong(long value) =>
+    JsonSerializer.SerializeToElement(value, ApiJsonSerializerContext.Default.Int64);
+
+static JsonElement JsonInt(int value) =>
+    JsonSerializer.SerializeToElement(value, ApiJsonSerializerContext.Default.Int32);
+
+static JsonElement JsonBool(bool value) =>
+    JsonSerializer.SerializeToElement(value, ApiJsonSerializerContext.Default.Boolean);
 
 // OpenAI 兼容的多模态消息会在 content parts 里使用 type=image_url。
 static bool RequestContainsImages(JsonElement root)

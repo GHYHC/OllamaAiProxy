@@ -29,12 +29,14 @@
       min-height: 100vh;
       background: var(--bg);
       color: var(--text);
+      overflow: hidden;
     }
 
     .shell {
       display: grid;
       grid-template-rows: auto 1fr auto;
-      min-height: 100vh;
+      height: 100vh;
+      overflow: hidden;
     }
 
     header {
@@ -109,6 +111,7 @@
       gap: 16px;
       padding: 16px 24px;
       min-height: 0;
+      overflow: hidden;
     }
 
     .chat,
@@ -194,13 +197,15 @@
 
     .side {
       padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
       overflow: auto;
     }
 
     .status {
       display: grid;
       gap: 10px;
-      margin-top: 12px;
       font-size: 13px;
       color: var(--muted);
     }
@@ -209,8 +214,53 @@
       color: var(--text);
     }
 
+    .detail-card {
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+    }
+
+    .detail-card h2 {
+      margin: 0 0 10px;
+      font-size: 16px;
+    }
+
+    .detail-grid {
+      display: grid;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .detail-grid div {
+      display: grid;
+      gap: 2px;
+    }
+
+    .detail-grid strong {
+      color: var(--text);
+      font-weight: 650;
+      word-break: break-word;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 3px 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #f8fafc;
+      color: var(--text);
+      font-size: 12px;
+    }
+
     .raw {
-      margin-top: 12px;
       padding: 10px;
       border-radius: 6px;
       background: #111827;
@@ -220,7 +270,8 @@
       font-size: 12px;
       white-space: pre-wrap;
       word-break: break-word;
-      max-height: 300px;
+      min-height: 120px;
+      max-height: 240px;
     }
 
     .error {
@@ -246,6 +297,14 @@
 
       main {
         grid-template-columns: 1fr;
+        overflow: auto;
+      }
+
+      body,
+      .shell {
+        height: auto;
+        min-height: 100vh;
+        overflow: auto;
       }
 
       .composer {
@@ -289,6 +348,15 @@
           <div>模型数量：<strong id="modelCount">0</strong></div>
           <div>请求耗时：<strong id="latency">-</strong></div>
         </div>
+
+        <section class="detail-card" aria-label="模型详情">
+          <h2>模型详情</h2>
+          <div id="modelDetails" class="detail-grid">
+            <div>当前模型：<strong>未选择</strong></div>
+            <div>状态：<strong>等待选择模型</strong></div>
+          </div>
+        </section>
+
         <div id="raw" class="raw">等待请求...</div>
       </aside>
     </main>
@@ -303,6 +371,7 @@
       latency: document.getElementById("latency"),
       messages: document.getElementById("messages"),
       modelCount: document.getElementById("modelCount"),
+      modelDetails: document.getElementById("modelDetails"),
       modelSelect: document.getElementById("modelSelect"),
       prompt: document.getElementById("prompt"),
       raw: document.getElementById("raw"),
@@ -311,6 +380,7 @@
     };
 
     const state = {
+      detailRequestId: 0,
       messages: [
         { role: "system", content: "你是一个简洁的中文助手，用于验证 OllamaAiProxy 是否可用。" }
       ]
@@ -390,10 +460,14 @@
 
         if (models.length === 0) {
           els.modelSelect.innerHTML = "<option value=\"\">没有可用模型</option>";
+          renderModelDetails(null, "没有可用模型");
+        } else {
+          await loadModelDetails(els.modelSelect.value);
         }
       } catch (error) {
         els.modelSelect.innerHTML = "<option value=\"\">模型加载失败</option>";
         els.modelCount.textContent = "0";
+        renderModelDetails(null, `模型加载失败：${error.message}`, true);
         setRaw(error.body || error.message, true);
       }
     }
@@ -405,6 +479,104 @@
       const meta = [family, parameterSize].filter(Boolean).join(", ");
 
       return meta ? `${name} (${meta})` : name;
+    }
+
+    async function loadModelDetails(model) {
+      const requestId = ++state.detailRequestId;
+      if (!model) {
+        renderModelDetails(null, "请先选择模型");
+        return;
+      }
+
+      renderModelDetails({ model }, "详情加载中...");
+
+      try {
+        const data = await requestJson("/api/show", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model })
+        });
+
+        if (requestId !== state.detailRequestId) return;
+        renderModelDetails({ model, ...data }, "已加载");
+        setRaw(data);
+      } catch (error) {
+        if (requestId !== state.detailRequestId) return;
+        renderModelDetails({ model }, `详情加载失败：${error.message}`, true);
+        setRaw(error.body || error.message, true);
+      }
+    }
+
+    function renderModelDetails(detail, status, isError = false) {
+      const modelName = detail?.model || els.modelSelect.value || "未选择";
+      const details = detail?.details || {};
+      const modelInfo = detail?.model_info || {};
+      const architecture = getModelInfoValue(modelInfo, "general.architecture") || details.family || "-";
+      const contextLength = getModelInfoValue(modelInfo, `${architecture}.context_length`);
+      const maxOutputTokens = getModelInfoValue(modelInfo, `${architecture}.max_output_tokens`);
+      const availability = getModelInfoValue(modelInfo, `${architecture}.availability`);
+      const displayName = getModelInfoValue(modelInfo, "general.display_name") || getModelInfoValue(modelInfo, "general.name");
+      const capabilities = Array.isArray(detail?.capabilities) ? detail.capabilities : [];
+
+      els.modelDetails.innerHTML = "";
+      els.modelDetails.appendChild(createDetailRow("当前模型", modelName));
+      els.modelDetails.appendChild(createDetailRow("状态", status, isError));
+
+      if (!detail || !detail.details && !detail.model_info) {
+        return;
+      }
+
+      els.modelDetails.appendChild(createDetailRow("显示名称", displayName || "-"));
+      els.modelDetails.appendChild(createDetailRow("架构/家族", architecture));
+      els.modelDetails.appendChild(createDetailRow("上下文长度", formatNumber(contextLength)));
+      els.modelDetails.appendChild(createDetailRow("最大输出", formatNumber(maxOutputTokens)));
+      els.modelDetails.appendChild(createDetailRow("参数规模", details.parameter_size || formatNumber(getModelInfoValue(modelInfo, "general.parameter_count"))));
+      els.modelDetails.appendChild(createDetailRow("量化等级", details.quantization_level || "-"));
+      els.modelDetails.appendChild(createDetailRow("可用状态", availability || "-"));
+      els.modelDetails.appendChild(createDetailRow("更新时间", detail.modified_at || "-"));
+      els.modelDetails.appendChild(createCapabilityRow(capabilities));
+    }
+
+    function createDetailRow(label, value, isError = false) {
+      const row = document.createElement("div");
+      const text = document.createTextNode(`${label}：`);
+      const strong = document.createElement("strong");
+      strong.textContent = value ?? "-";
+      strong.classList.toggle("error", isError);
+      row.append(text, strong);
+      return row;
+    }
+
+    function createCapabilityRow(capabilities) {
+      const row = document.createElement("div");
+      row.appendChild(document.createTextNode("能力："));
+      const chips = document.createElement("span");
+      chips.className = "chips";
+
+      if (capabilities.length === 0) {
+        const empty = document.createElement("strong");
+        empty.textContent = "-";
+        row.appendChild(empty);
+        return row;
+      }
+
+      for (const capability of capabilities) {
+        const chip = document.createElement("span");
+        chip.className = "chip";
+        chip.textContent = capability;
+        chips.appendChild(chip);
+      }
+
+      row.appendChild(chips);
+      return row;
+    }
+
+    function getModelInfoValue(modelInfo, key) {
+      return Object.prototype.hasOwnProperty.call(modelInfo, key) ? modelInfo[key] : null;
+    }
+
+    function formatNumber(value) {
+      return typeof value === "number" && value > 0 ? value.toLocaleString("zh-CN") : "-";
     }
 
     async function sendMessage(content) {
@@ -464,6 +636,7 @@
     });
 
     els.reloadModels.addEventListener("click", loadModels);
+    els.modelSelect.addEventListener("change", () => loadModelDetails(els.modelSelect.value));
 
     appendMessage("system", "页面已就绪。选择模型后发送消息即可测试 /v1/chat/completions。");
     loadHealth();

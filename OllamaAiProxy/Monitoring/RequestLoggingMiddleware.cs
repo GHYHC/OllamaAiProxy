@@ -7,7 +7,6 @@ namespace OllamaAiProxy.Monitoring;
 
 public sealed class RequestLoggingMiddleware
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly RequestDelegate _next;
     private readonly IWebHostEnvironment _environment;
     private readonly RequestLoggingOptions _options;
@@ -77,7 +76,7 @@ public sealed class RequestLoggingMiddleware
             var logDir = Path.Combine(_environment.ContentRootPath, _options.Directory);
             Directory.CreateDirectory(logDir);
             var file = Path.Combine(logDir, $"requests-{startedAt:yyyyMMdd}.jsonl");
-            var line = JsonSerializer.Serialize(entry, JsonOptions) + Environment.NewLine;
+            var line = JsonSerializer.Serialize(entry, RequestLoggingJsonSerializerContext.Default.RequestLogEntry) + Environment.NewLine;
 
             Console.WriteLine(
                 $"[{entry.Timestamp}] {entry.Method} {entry.Path}{entry.QueryString} " +
@@ -101,22 +100,4 @@ public sealed class RequestLoggingMiddleware
         }
     }
 
-    private sealed record RequestLogEntry(
-        string Timestamp,
-        string TraceIdentifier,
-        string Method,
-        string Path,
-        string QueryString,
-        int StatusCode,
-        double ElapsedMs,
-        string? RemoteIp,
-        string UserAgent,
-        string Referer,
-        string Origin,
-        string XForwardedFor,
-        string XRealIp,
-        string RequestId,
-        string? ContentType,
-        string? Error,
-        string Url);
 }

@@ -129,7 +129,7 @@ public sealed class OpenAIProvider : IAiProvider
 
     private static StringContent CreateJsonContent(JsonDocument request)
     {
-        var json = JsonSerializer.Serialize(request.RootElement);
+        var json = request.RootElement.GetRawText();
         return new StringContent(json, Encoding.UTF8, "application/json");
     }
 
