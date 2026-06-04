@@ -198,7 +198,7 @@ public sealed class OpenAIProvider : IAiProvider
                 Deprecated = false,
                 Availability = "available"
             },
-            Capabilities = new[] { "completion", "tools", "vision" }
+            Capabilities = new[] { "completion", "tools", "vision", "thinking" }
         };
     }
 
