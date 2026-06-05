@@ -29,6 +29,9 @@ jobs:
           - rid: win-x64
             os: windows-latest
             package: OllamaAiProxy-${{ github.event.inputs.tag || github.ref_name }}-win-x64.zip
+          - rid: win-arm64
+            os: windows-latest
+            package: OllamaAiProxy-${{ github.event.inputs.tag || github.ref_name }}-win-arm64.zip
           - rid: linux-x64
             os: ubuntu-latest
             package: OllamaAiProxy-${{ github.event.inputs.tag || github.ref_name }}-linux-x64.tar.gz
@@ -189,6 +192,7 @@ jobs:
             | 系统 | 架构 | 下载 |
             | --- | --- | --- |
             | Windows | x64 | `OllamaAiProxy-${{ steps.release.outputs.tag }}-win-x64.zip` |
+            | Windows | ARM64 | `OllamaAiProxy-${{ steps.release.outputs.tag }}-win-arm64.zip` |
             | Linux | x64 | `OllamaAiProxy-${{ steps.release.outputs.tag }}-linux-x64.tar.gz` |
             | Linux | ARM64 | `OllamaAiProxy-${{ steps.release.outputs.tag }}-linux-arm64.tar.gz` |
             | macOS | Intel x64 | `OllamaAiProxy-${{ steps.release.outputs.tag }}-osx-x64.tar.gz` |
