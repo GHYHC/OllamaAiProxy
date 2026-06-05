@@ -150,6 +150,48 @@ jobs:
           cd dist
           sha256sum OllamaAiProxy-* > SHA256SUMS.txt
 
+      - name: Generate release notes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const tag = '${{ steps.release.outputs.tag }}';
+
+            const generated = await github.rest.repos.generateReleaseNotes({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+            });
+
+            const body = `## 下载
+            此版本提供 Native AOT 可执行程序包，无需预先安装 .NET Runtime。
+
+            | 系统 | 架构 | 下载 |
+            | --- | --- | --- |
+            | Windows | x64 | \`OllamaAiProxy-${tag}-win-x64.zip\` |
+            | Windows | ARM64 | \`OllamaAiProxy-${tag}-win-arm64.zip\` |
+            | Linux | x64 | \`OllamaAiProxy-${tag}-linux-x64.tar.gz\` |
+            | Linux | ARM64 | \`OllamaAiProxy-${tag}-linux-arm64.tar.gz\` |
+            | macOS | Intel x64 | \`OllamaAiProxy-${tag}-osx-x64.tar.gz\` |
+            | macOS | Apple Silicon ARM64 | \`OllamaAiProxy-${tag}-osx-arm64.tar.gz\` |
+
+            ## 使用
+            解压后编辑 \`appsettings.json\`，填入 DeepSeek 或 OpenAI 的 \`ApiKey\`。然后运行程序：
+
+            - Windows: \`OllamaAiProxy.exe\`
+            - Linux/macOS: \`./OllamaAiProxy\`
+
+            默认监听 \`http://localhost:11434\`，也可以通过环境变量 \`PORT\` 指定端口。
+
+            Linux/macOS 如遇到执行权限问题，请先运行：\`chmod +x OllamaAiProxy\`。
+
+            ## 校验
+            下载 \`SHA256SUMS.txt\` 可校验附件完整性。
+
+            ${generated.data.body}`.replace(/^ {12}/gm, '');
+
+            fs.writeFileSync('dist/RELEASE_NOTES.md', body);
+
       - name: Remove existing release assets
         uses: actions/github-script@v7
         with:
@@ -185,28 +227,4 @@ jobs:
             dist/SHA256SUMS.txt
           fail_on_unmatched_files: true
           overwrite_files: true
-          body: |
-            ## 下载
-            此版本提供 Native AOT 可执行程序包，无需预先安装 .NET Runtime。
-
-            | 系统 | 架构 | 下载 |
-            | --- | --- | --- |
-            | Windows | x64 | `OllamaAiProxy-${{ steps.release.outputs.tag }}-win-x64.zip` |
-            | Windows | ARM64 | `OllamaAiProxy-${{ steps.release.outputs.tag }}-win-arm64.zip` |
-            | Linux | x64 | `OllamaAiProxy-${{ steps.release.outputs.tag }}-linux-x64.tar.gz` |
-            | Linux | ARM64 | `OllamaAiProxy-${{ steps.release.outputs.tag }}-linux-arm64.tar.gz` |
-            | macOS | Intel x64 | `OllamaAiProxy-${{ steps.release.outputs.tag }}-osx-x64.tar.gz` |
-            | macOS | Apple Silicon ARM64 | `OllamaAiProxy-${{ steps.release.outputs.tag }}-osx-arm64.tar.gz` |
-
-            ## 使用
-            解压后编辑 `appsettings.json`，填入 DeepSeek 或 OpenAI 的 `ApiKey`。然后运行程序：
-
-            - Windows: `OllamaAiProxy.exe`
-            - Linux/macOS: `./OllamaAiProxy`
-
-            默认监听 `http://localhost:11434`，也可以通过环境变量 `PORT` 指定端口。
-
-            Linux/macOS 如遇到执行权限问题，请先运行：`chmod +x OllamaAiProxy`。
-
-            ## 校验
-            下载 `SHA256SUMS.txt` 可校验附件完整性。
+          body_path: dist/RELEASE_NOTES.md
