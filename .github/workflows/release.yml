@@ -29,23 +29,18 @@ jobs:
           - rid: win-x64
             os: windows-latest
             package: OllamaAiProxy-${{ github.event.inputs.tag || github.ref_name }}-win-x64.zip
-            shell: pwsh
           - rid: linux-x64
             os: ubuntu-latest
             package: OllamaAiProxy-${{ github.event.inputs.tag || github.ref_name }}-linux-x64.tar.gz
-            shell: bash
           - rid: linux-arm64
             os: ubuntu-24.04-arm
             package: OllamaAiProxy-${{ github.event.inputs.tag || github.ref_name }}-linux-arm64.tar.gz
-            shell: bash
           - rid: osx-x64
             os: macos-13
             package: OllamaAiProxy-${{ github.event.inputs.tag || github.ref_name }}-osx-x64.tar.gz
-            shell: bash
           - rid: osx-arm64
             os: macos-14
             package: OllamaAiProxy-${{ github.event.inputs.tag || github.ref_name }}-osx-arm64.tar.gz
-            shell: bash
 
     steps:
       - name: Resolve release tag
@@ -73,8 +68,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang zlib1g-dev
 
-      - name: Publish Native AOT
-        shell: ${{ matrix.shell }}
+      - name: Publish Native AOT on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >
+          dotnet publish ${{ env.PROJECT_PATH }}
+          -c Release
+          -r ${{ matrix.rid }}
+          --self-contained true
+          -o publish/${{ matrix.rid }}
+          /p:PublishAot=true
+          /p:PublishSingleFile=true
+          /p:DebugType=None
+          /p:DebugSymbols=false
+          /p:Version=${{ steps.release.outputs.version }}
+          /p:AssemblyVersion=${{ steps.release.outputs.version }}.0
+          /p:FileVersion=${{ steps.release.outputs.version }}.0
+
+      - name: Publish Native AOT on Unix
+        if: runner.os != 'Windows'
+        shell: bash
         run: >
           dotnet publish ${{ env.PROJECT_PATH }}
           -c Release
