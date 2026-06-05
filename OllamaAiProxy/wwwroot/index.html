@@ -3,21 +3,30 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OllamaAiProxy Chat Test</title>
+  <title>OllamaAiProxy Test Console</title>
   <style>
     :root {
       color-scheme: light;
-      --bg: #f5f7fb;
-      --panel: #ffffff;
-      --line: #d9e0ea;
-      --text: #172033;
-      --muted: #687387;
+      --bg: #eef2f7;
+      --surface: #ffffff;
+      --surface-soft: #f8fafc;
+      --surface-strong: #111827;
+      --line: #d8dee8;
+      --line-strong: #b9c3d1;
+      --text: #152033;
+      --muted: #637083;
+      --muted-strong: #405066;
       --brand: #0f766e;
-      --brand-dark: #115e59;
+      --brand-hover: #115e59;
+      --accent: #2563eb;
+      --success: #15803d;
+      --warning: #a16207;
       --danger: #b42318;
-      --assistant: #eef7f5;
-      --user: #eaf1ff;
-      font-family: "Segoe UI", Arial, sans-serif;
+      --assistant: #ecfdf5;
+      --user: #eff6ff;
+      --system: #fff7ed;
+      --shadow: 0 18px 48px rgba(15, 23, 42, .10);
+      font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
     }
 
     * {
@@ -27,216 +36,280 @@
     body {
       margin: 0;
       min-height: 100vh;
-      background: var(--bg);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.92), rgba(238,242,247,.82)),
+        repeating-linear-gradient(90deg, rgba(100,116,139,.08) 0, rgba(100,116,139,.08) 1px, transparent 1px, transparent 80px);
       color: var(--text);
       overflow: hidden;
     }
 
-    .shell {
-      display: grid;
-      grid-template-rows: auto 1fr auto;
-      height: 100vh;
-      overflow: hidden;
-    }
-
-    header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      padding: 16px 24px;
-      background: var(--panel);
-      border-bottom: 1px solid var(--line);
-    }
-
-    h1 {
-      margin: 0;
-      font-size: 20px;
-      font-weight: 650;
-    }
-
-    .toolbar {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-
-    label {
-      font-size: 13px;
-      color: var(--muted);
-    }
-
+    button,
     select,
-    textarea,
-    button {
+    textarea {
       font: inherit;
     }
 
-    select {
-      min-width: 260px;
-      height: 38px;
-      padding: 0 10px;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: #fff;
-      color: var(--text);
-    }
-
     button {
-      height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      min-height: 38px;
       padding: 0 14px;
       border: 1px solid transparent;
       border-radius: 6px;
       background: var(--brand);
       color: #fff;
       cursor: pointer;
-      font-weight: 600;
+      font-weight: 650;
+      white-space: nowrap;
+      transition: background .18s ease, border-color .18s ease, transform .18s ease;
+    }
+
+    button:hover:not(:disabled) {
+      background: var(--brand-hover);
+      transform: translateY(-1px);
     }
 
     button.secondary {
-      background: #fff;
+      background: var(--surface);
       color: var(--text);
       border-color: var(--line);
+    }
+
+    button.secondary:hover:not(:disabled) {
+      background: var(--surface-soft);
+      border-color: var(--line-strong);
+    }
+
+    button.icon-only {
+      width: 38px;
+      padding: 0;
     }
 
     button:disabled {
       opacity: .58;
       cursor: not-allowed;
+      transform: none;
     }
 
-    main {
+    .icon {
+      width: 16px;
+      height: 16px;
+      flex: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+    }
+
+    .shell {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 320px;
-      gap: 16px;
-      padding: 16px 24px;
-      min-height: 0;
-      overflow: hidden;
-    }
-
-    .chat,
-    .side {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      min-height: 0;
-    }
-
-    .chat {
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
-
-    .messages {
-      flex: 1;
-      overflow: auto;
+      grid-template-rows: auto 1fr;
+      height: 100vh;
       padding: 18px;
+      gap: 14px;
+      overflow: hidden;
     }
 
-    .message {
-      max-width: 860px;
-      margin: 0 0 14px;
-      padding: 12px 14px;
-      border-radius: 8px;
-      border: 1px solid var(--line);
-      line-height: 1.55;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-
-    .message.user {
-      margin-left: auto;
-      background: var(--user);
-    }
-
-    .message.assistant {
-      background: var(--assistant);
-    }
-
-    .message.system {
-      max-width: none;
-      background: #fff7ed;
-      color: #7c2d12;
-    }
-
-    .role {
-      display: block;
-      margin-bottom: 6px;
-      font-size: 12px;
-      color: var(--muted);
-      font-weight: 700;
-      text-transform: uppercase;
-    }
-
-    .composer {
+    .topbar {
       display: grid;
       grid-template-columns: 1fr auto;
+      gap: 18px;
+      align-items: center;
+      min-height: 68px;
+      padding: 14px 18px;
+      background: rgba(255,255,255,.92);
+      border: 1px solid rgba(216,222,232,.86);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
+    }
+
+    .brand-block {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: #0f172a;
+      color: #99f6e4;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.12);
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 21px;
+      line-height: 1.2;
+      font-weight: 720;
+    }
+
+    .subtitle {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: minmax(260px, 390px) auto;
       gap: 10px;
-      padding: 12px;
-      border-top: 1px solid var(--line);
-      background: #fbfcfe;
+      align-items: end;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+
+    label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    select,
+    textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      outline: none;
+      transition: border-color .18s ease, box-shadow .18s ease;
+    }
+
+    select {
+      height: 38px;
+      padding: 0 10px;
     }
 
     textarea {
-      min-height: 76px;
-      max-height: 220px;
+      min-height: 98px;
+      max-height: 260px;
       resize: vertical;
-      padding: 10px 12px;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      color: var(--text);
+      padding: 12px 13px;
+      line-height: 1.5;
     }
 
-    .send-stack {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      min-width: 96px;
+    select:focus,
+    textarea:focus {
+      border-color: rgba(37,99,235,.78);
+      box-shadow: 0 0 0 3px rgba(37,99,235,.14);
     }
 
-    .side {
-      padding: 16px;
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(250px, 310px) minmax(420px, 1fr) minmax(300px, 380px);
+      gap: 14px;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .panel {
       display: flex;
       flex-direction: column;
+      min-height: 0;
+      background: rgba(255,255,255,.94);
+      border: 1px solid rgba(216,222,232,.9);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
       gap: 12px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(248,250,252,.82);
+    }
+
+    .panel-title {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 760;
+      color: var(--muted-strong);
+    }
+
+    .panel-body {
+      flex: 1;
+      min-height: 0;
+      padding: 16px;
       overflow: auto;
     }
 
-    .status {
+    .status-grid {
       display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 10px;
-      font-size: 13px;
+    }
+
+    .metric {
+      min-height: 78px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface-soft);
+    }
+
+    .metric-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
       color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
     }
 
-    .status strong {
+    .metric-value {
+      margin-top: 10px;
       color: var(--text);
-    }
-
-    .detail-card {
-      padding-top: 14px;
-      border-top: 1px solid var(--line);
-    }
-
-    .detail-card h2 {
-      margin: 0 0 10px;
       font-size: 16px;
+      font-weight: 760;
+      word-break: break-word;
+    }
+
+    .metric-value.small {
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .divider {
+      height: 1px;
+      margin: 16px 0;
+      background: var(--line);
     }
 
     .detail-grid {
       display: grid;
-      gap: 8px;
-      font-size: 13px;
-      color: var(--muted);
+      gap: 9px;
     }
 
-    .detail-grid div {
+    .detail-row {
       display: grid;
-      gap: 2px;
+      grid-template-columns: 86px minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
     }
 
-    .detail-grid strong {
+    .detail-row strong {
       color: var(--text);
       font-weight: 650;
       word-break: break-word;
@@ -253,111 +326,322 @@
       align-items: center;
       min-height: 24px;
       padding: 3px 8px;
-      border: 1px solid var(--line);
+      border: 1px solid #c7d2fe;
       border-radius: 999px;
-      background: #f8fafc;
-      color: var(--text);
+      background: #eef2ff;
+      color: #3730a3;
       font-size: 12px;
+      font-weight: 650;
+    }
+
+    .messages {
+      flex: 1;
+      min-height: 0;
+      padding: 18px;
+      overflow: auto;
+      background:
+        linear-gradient(180deg, rgba(248,250,252,.7), rgba(255,255,255,.96)),
+        repeating-linear-gradient(0deg, transparent 0, transparent 31px, rgba(148,163,184,.10) 32px);
+    }
+
+    .message {
+      max-width: min(820px, 88%);
+      margin: 0 0 14px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      line-height: 1.58;
+      white-space: pre-wrap;
+      word-break: break-word;
+      box-shadow: 0 5px 14px rgba(15,23,42,.05);
+    }
+
+    .message.user {
+      margin-left: auto;
+      background: var(--user);
+      border-color: #bfdbfe;
+    }
+
+    .message.assistant {
+      background: var(--assistant);
+      border-color: #bbf7d0;
+    }
+
+    .message.system {
+      max-width: 100%;
+      background: var(--system);
+      border-color: #fed7aa;
+      color: #7c2d12;
+    }
+
+    .role {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 7px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .composer {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      padding: 14px;
+      border-top: 1px solid var(--line);
+      background: var(--surface);
+    }
+
+    .send-stack {
+      display: grid;
+      grid-template-rows: 1fr 1fr;
+      gap: 8px;
+      width: 96px;
     }
 
     .raw {
-      padding: 10px;
-      border-radius: 6px;
-      background: #111827;
+      flex: 1;
+      min-height: 220px;
+      padding: 14px;
+      border-radius: 8px;
+      background: var(--surface-strong);
       color: #e5e7eb;
       overflow: auto;
       font-family: Consolas, "SFMono-Regular", monospace;
       font-size: 12px;
+      line-height: 1.55;
       white-space: pre-wrap;
       word-break: break-word;
-      min-height: 120px;
-      max-height: 240px;
+    }
+
+    .endpoint-list {
+      display: grid;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .endpoint {
+      display: grid;
+      grid-template-columns: 62px 1fr;
+      gap: 8px;
+      align-items: center;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface-soft);
+      font-size: 13px;
+    }
+
+    .method {
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .path {
+      color: var(--text);
+      font-family: Consolas, "SFMono-Regular", monospace;
+      overflow-wrap: anywhere;
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
     }
 
     .error {
-      color: var(--danger);
+      color: var(--danger) !important;
     }
 
-    @media (max-width: 900px) {
-      header,
-      main {
+    .ok {
+      color: var(--success) !important;
+    }
+
+    .warn {
+      color: var(--warning) !important;
+    }
+
+    @media (max-width: 1180px) {
+      body {
+        overflow: auto;
+      }
+
+      .shell {
+        height: auto;
+        min-height: 100vh;
+        overflow: visible;
+      }
+
+      .topbar {
+        grid-template-columns: 1fr;
+      }
+
+      .toolbar {
+        grid-template-columns: 1fr auto;
+      }
+
+      .workspace {
+        grid-template-columns: minmax(0, 1fr);
+        overflow: visible;
+      }
+
+      .panel {
+        min-height: 360px;
+      }
+
+      .chat-panel {
+        min-height: 620px;
+      }
+    }
+
+    @media (max-width: 680px) {
+      .shell {
+        padding: 10px;
+      }
+
+      .topbar,
+      .panel-header,
+      .panel-body,
+      .messages,
+      .composer {
         padding-left: 12px;
         padding-right: 12px;
       }
 
-      header,
-      .toolbar {
-        align-items: stretch;
-        flex-direction: column;
+      .brand-block {
+        align-items: flex-start;
       }
 
-      select {
-        min-width: 100%;
-      }
-
-      main {
-        grid-template-columns: 1fr;
-        overflow: auto;
-      }
-
-      body,
-      .shell {
-        height: auto;
-        min-height: 100vh;
-        overflow: auto;
-      }
-
+      .toolbar,
       .composer {
         grid-template-columns: 1fr;
       }
 
+      .status-grid {
+        grid-template-columns: 1fr;
+      }
+
       .send-stack {
-        flex-direction: row;
+        width: 100%;
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: auto;
+      }
+
+      .message {
+        max-width: 100%;
       }
     }
   </style>
 </head>
 <body>
   <div class="shell">
-    <header>
-      <h1>OllamaAiProxy 聊天测试</h1>
+    <header class="topbar">
+      <div class="brand-block">
+        <div class="brand-mark">OA</div>
+        <div>
+          <h1>OllamaAiProxy 测试控制台</h1>
+          <div class="subtitle">本地 OpenAI/Ollama 兼容代理的模型发现、详情探测与聊天验证</div>
+        </div>
+      </div>
       <div class="toolbar">
-        <label for="modelSelect">模型</label>
-        <select id="modelSelect"></select>
-        <button id="reloadModels" class="secondary" type="button">刷新模型</button>
+        <div class="field">
+          <label for="modelSelect">当前模型</label>
+          <select id="modelSelect"></select>
+        </div>
+        <button id="reloadModels" class="secondary" type="button" title="刷新模型列表">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 0-15.3-6.4"/><path d="M3 4v6h6"/><path d="M3 12a9 9 0 0 0 15.3 6.4"/><path d="M21 20v-6h-6"/></svg>
+          刷新
+        </button>
       </div>
     </header>
 
-    <main>
-      <section class="chat" aria-label="聊天窗口">
+    <main class="workspace">
+      <aside class="panel">
+        <div class="panel-header">
+          <h2 class="panel-title">运行概览</h2>
+        </div>
+        <div class="panel-body">
+          <div class="status-grid">
+            <div class="metric">
+              <div class="metric-label">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                服务地址
+              </div>
+              <div id="baseUrl" class="metric-value small"></div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 13c0 5-3.5 7.5-7.7 8.9a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.2-2.7a1.2 1.2 0 0 1 1.6 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1Z"/><path d="m9 12 2 2 4-4"/></svg>
+                健康检查
+              </div>
+              <div id="health" class="metric-value small">未检测</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg>
+                模型数量
+              </div>
+              <div id="modelCount" class="metric-value">0</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+                请求耗时
+              </div>
+              <div id="latency" class="metric-value">-</div>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+
+          <h2 class="panel-title">模型详情</h2>
+          <div id="modelDetails" class="detail-grid" style="margin-top:12px;">
+            <div class="detail-row"><span>当前模型</span><strong>未选择</strong></div>
+            <div class="detail-row"><span>状态</span><strong>等待选择模型</strong></div>
+          </div>
+        </div>
+      </aside>
+
+      <section class="panel chat-panel" aria-label="聊天窗口">
+        <div class="panel-header">
+          <h2 class="panel-title">聊天验证</h2>
+          <button id="clear" class="secondary icon-only" type="button" title="清空对话">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+          </button>
+        </div>
         <div id="messages" class="messages"></div>
         <form id="chatForm" class="composer">
           <textarea id="prompt" placeholder="输入一句话测试接口，例如：你好，简单介绍一下你自己。" required></textarea>
           <div class="send-stack">
-            <button id="send" type="submit">发送</button>
-            <button id="clear" class="secondary" type="button">清空</button>
+            <button id="send" type="submit">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+              发送
+            </button>
+            <button id="quickPrompt" class="secondary" type="button">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9Z"/></svg>
+              示例
+            </button>
           </div>
         </form>
       </section>
 
-      <aside class="side">
-        <h2 style="margin:0;font-size:16px;">接口状态</h2>
-        <div class="status">
-          <div>服务地址：<strong id="baseUrl"></strong></div>
-          <div>健康检查：<strong id="health">未检测</strong></div>
-          <div>模型数量：<strong id="modelCount">0</strong></div>
-          <div>请求耗时：<strong id="latency">-</strong></div>
+      <aside class="panel">
+        <div class="panel-header">
+          <h2 class="panel-title">接口响应</h2>
         </div>
-
-        <section class="detail-card" aria-label="模型详情">
-          <h2>模型详情</h2>
-          <div id="modelDetails" class="detail-grid">
-            <div>当前模型：<strong>未选择</strong></div>
-            <div>状态：<strong>等待选择模型</strong></div>
+        <div class="panel-body">
+          <div class="endpoint-list">
+            <div class="endpoint"><span class="method">GET</span><span class="path">/health</span></div>
+            <div class="endpoint"><span class="method">GET</span><span class="path">/api/tags</span></div>
+            <div class="endpoint"><span class="method">POST</span><span class="path">/api/show</span></div>
+            <div class="endpoint"><span class="method">POST</span><span class="path">/v1/chat/completions</span></div>
           </div>
-        </section>
-
-        <div id="raw" class="raw">等待请求...</div>
+          <div id="raw" class="raw">等待请求...</div>
+          <p class="hint">原始响应会显示最近一次模型、详情或聊天请求结果，便于对照客户端探测行为。</p>
+        </div>
       </aside>
     </main>
   </div>
@@ -374,6 +658,7 @@
       modelDetails: document.getElementById("modelDetails"),
       modelSelect: document.getElementById("modelSelect"),
       prompt: document.getElementById("prompt"),
+      quickPrompt: document.getElementById("quickPrompt"),
       raw: document.getElementById("raw"),
       reloadModels: document.getElementById("reloadModels"),
       send: document.getElementById("send")
@@ -408,6 +693,7 @@
       els.send.disabled = isBusy;
       els.reloadModels.disabled = isBusy;
       els.prompt.disabled = isBusy;
+      els.quickPrompt.disabled = isBusy;
     }
 
     async function requestJson(url, options) {
@@ -434,10 +720,16 @@
     async function loadHealth() {
       try {
         const health = await requestJson("/health");
-        els.health.textContent = `${health.status || "ok"} / ${health.provider || "unknown"}`;
+        const providers = Array.isArray(health.providers)
+          ? health.providers.map(x => `${x.name}/${x.family}`).join(", ")
+          : health.provider || "unknown";
+        els.health.textContent = `${health.status || "ok"} / ${providers}`;
+        els.health.classList.add("ok");
+        els.health.classList.remove("error");
       } catch (error) {
         els.health.textContent = `失败：${error.message}`;
         els.health.classList.add("error");
+        els.health.classList.remove("ok");
       }
     }
 
@@ -539,8 +831,10 @@
 
     function createDetailRow(label, value, isError = false) {
       const row = document.createElement("div");
-      const text = document.createTextNode(`${label}：`);
+      row.className = "detail-row";
+      const text = document.createElement("span");
       const strong = document.createElement("strong");
+      text.textContent = label;
       strong.textContent = value ?? "-";
       strong.classList.toggle("error", isError);
       row.append(text, strong);
@@ -549,9 +843,10 @@
 
     function createCapabilityRow(capabilities) {
       const row = document.createElement("div");
-      row.appendChild(document.createTextNode("能力："));
-      const chips = document.createElement("span");
-      chips.className = "chips";
+      row.className = "detail-row";
+      const label = document.createElement("span");
+      label.textContent = "能力";
+      row.appendChild(label);
 
       if (capabilities.length === 0) {
         const empty = document.createElement("strong");
@@ -560,6 +855,8 @@
         return row;
       }
 
+      const chips = document.createElement("span");
+      chips.className = "chips";
       for (const capability of capabilities) {
         const chip = document.createElement("span");
         chip.className = "chip";
@@ -590,6 +887,8 @@
       appendMessage("user", content);
       setBusy(true);
       els.latency.textContent = "请求中...";
+      els.latency.classList.add("warn");
+      els.latency.classList.remove("error", "ok");
       const started = performance.now();
 
       try {
@@ -608,11 +907,15 @@
         appendMessage("assistant", answer);
         setRaw(data);
         els.latency.textContent = `${Math.round(performance.now() - started)} ms`;
+        els.latency.classList.add("ok");
+        els.latency.classList.remove("warn", "error");
       } catch (error) {
         state.messages.pop();
         appendMessage("system", `请求失败：${error.message}`);
         setRaw(error.body || error.message, true);
         els.latency.textContent = "失败";
+        els.latency.classList.add("error");
+        els.latency.classList.remove("warn", "ok");
       } finally {
         setBusy(false);
         els.prompt.focus();
@@ -627,11 +930,26 @@
       await sendMessage(content);
     });
 
+    els.prompt.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
+        return;
+      }
+
+      event.preventDefault();
+      els.chatForm.requestSubmit();
+    });
+
     els.clear.addEventListener("click", () => {
       state.messages = state.messages.slice(0, 1);
       els.messages.innerHTML = "";
       els.latency.textContent = "-";
+      els.latency.classList.remove("error", "ok", "warn");
       setRaw("已清空对话。");
+      els.prompt.focus();
+    });
+
+    els.quickPrompt.addEventListener("click", () => {
+      els.prompt.value = "用中文用两句话说明你是什么模型，并返回当前请求是否通过 OllamaAiProxy 代理。";
       els.prompt.focus();
     });
 
