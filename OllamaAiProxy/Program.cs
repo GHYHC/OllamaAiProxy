@@ -6,6 +6,7 @@ using OllamaAiProxy.Monitoring;
 using OllamaAiProxy.Providers;
 
 const int DefaultPort = 11434;
+const string OllamaVersion = "0.24.0";
 
 var builder = WebApplication.CreateSlimBuilder(args);
 var port = builder.Configuration.GetValue("PORT", DefaultPort);
@@ -45,6 +46,14 @@ app.MapGet("/health", (IAiProviderRegistry registry) =>
         "ok",
         registry.Providers.Select(x => new ProviderSummary(x.Name, x.Family)).ToArray()),
         ApiJsonSerializerContext.Default.HealthResponse);
+});
+
+// Ollama 版本接口：用于客户端探测服务版本，响应保持 Ollama /api/version 的简洁格式。
+app.MapGet("/api/version", () =>
+{
+    return Results.Json(
+        new VersionResponse(OllamaVersion),
+        ApiJsonSerializerContext.Default.VersionResponse);
 });
 
 // Ollama 模型列表接口：把厂商无关的模型元数据转换成 Ollama /api/tags 响应格式。

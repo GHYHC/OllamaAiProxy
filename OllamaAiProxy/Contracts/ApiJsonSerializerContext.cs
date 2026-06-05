@@ -5,6 +5,7 @@ namespace OllamaAiProxy.Contracts;
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 [JsonSerializable(typeof(ApiErrorResponse))]
 [JsonSerializable(typeof(HealthResponse))]
+[JsonSerializable(typeof(VersionResponse))]
 [JsonSerializable(typeof(OllamaTagsResponse))]
 [JsonSerializable(typeof(OllamaShowResponse))]
 [JsonSerializable(typeof(Dictionary<string, System.Text.Json.JsonElement>))]

@@ -9,6 +9,8 @@ public sealed record HealthResponse(
     string Status,
     IReadOnlyList<ProviderSummary> Providers);
 
+public sealed record VersionResponse(string Version);
+
 public sealed record ProviderSummary(
     string Name,
     string Family);
