@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http.Json;
 using OllamaAiProxy.Contracts;
 using OllamaAiProxy.Monitoring;
 using OllamaAiProxy.Providers;
+using OllamaAiProxy.Services;
 
 const int DefaultPort = 11434;
 const string OllamaVersion = "0.24.0";
@@ -32,8 +33,15 @@ builder.Services.AddSingleton<IReadOnlyList<IAiProvider>>(sp =>
     return CreateProviders(configuration, httpClientFactory);
 });
 builder.Services.AddSingleton<IAiProviderRegistry, AiProviderRegistry>();
+builder.Services.AddSingleton(sp =>
+{
+    var overridesPath = Path.Combine(AppContext.BaseDirectory, "model-overrides.json");
+    return new ModelOverridesStore(overridesPath);
+});
 
 var app = builder.Build();
+// 加载用户自定义的模型详情覆盖数据。
+await app.Services.GetRequiredService<ModelOverridesStore>().LoadAsync();
 
 app.UseMiddleware<RequestLoggingMiddleware>();
 app.UseDefaultFiles();
@@ -66,7 +74,7 @@ app.MapGet("/api/tags", async (IAiProviderRegistry registry, CancellationToken c
 });
 
 // Ollama 模型详情接口：模型不存在时返回 404，避免客户端误以为已经使用指定模型。
-app.MapPost("/api/show", async (HttpContext context, IAiProviderRegistry registry) =>
+app.MapPost("/api/show", async (HttpContext context, IAiProviderRegistry registry, ModelOverridesStore overridesStore) =>
 {
     var cancellationToken = context.RequestAborted;
     var modelName = await ReadModelName(context.Request, cancellationToken);
@@ -80,9 +88,29 @@ app.MapPost("/api/show", async (HttpContext context, IAiProviderRegistry registr
     if (resolved is null)
         return Error($"model '{modelName}' not found", StatusCodes.Status404NotFound);
 
+    var overrides = overridesStore.Get(modelName);
     return Results.Json(
-        ToOllamaShow(resolved.Value.Provider, resolved.Value.Model),
+        ToOllamaShow(resolved.Value.Provider, resolved.Value.Model, overrides),
         ApiJsonSerializerContext.Default.OllamaShowResponse);
+});
+
+// 模型详情覆盖接口
+app.MapGet("/api/model-overrides", (ModelOverridesStore overridesStore) =>
+{
+    return Results.Json(overridesStore.GetAll(), ModelOverridesJsonContext.Default.ConcurrentDictionaryStringModelOverride);
+});
+
+app.MapPut("/api/model-overrides/{provider}/{model}", async (string provider, string model, ModelOverride body, ModelOverridesStore overridesStore) =>
+{
+    var key = $"{provider}/{Uri.UnescapeDataString(model)}";
+    await overridesStore.SetAsync(key, body);
+    return Results.Ok(body);
+});
+
+app.MapDelete("/api/model-overrides/{provider}/{model}", async (string provider, string model, ModelOverridesStore overridesStore) =>
+{
+    var key = $"{provider}/{Uri.UnescapeDataString(model)}";
+    return await overridesStore.RemoveAsync(key) ? Results.Ok() : Results.NotFound();
 });
 
 // OpenAI 兼容聊天接口：provider 负责厂商转发，这一层只做通用校验和响应透传。
@@ -270,27 +298,41 @@ static OllamaTag ToOllamaTag(IAiProvider provider, AiModel model) => new(
     ToOllamaDetails(model.Details));
 
 // 将厂商无关模型信息转换成 Ollama /api/show 的模型详情响应。
-static OllamaShowResponse ToOllamaShow(IAiProvider provider, AiModel model) => new(
-    "",
-    "",
-    $"num_ctx {model.ModelInfo.ContextLength}\nnum_predict {model.ModelInfo.MaxOutputTokens}",
-    "",
-    ToOllamaDetails(model.Details),
-    new Dictionary<string, JsonElement>
-    {
-        ["general.name"] = JsonString(model.Id),
-        ["general.display_name"] = JsonString(model.DisplayName),
-        ["general.architecture"] = JsonString(model.ModelInfo.Architecture),
-        ["general.parameter_count"] = JsonLong(model.ModelInfo.ParameterCount),
-        [$"{model.ModelInfo.Architecture}.active_parameter_count"] = JsonLong(model.ModelInfo.ActiveParameterCount),
-        [$"{model.ModelInfo.Architecture}.context_length"] = JsonInt(model.ModelInfo.ContextLength),
-        [$"{model.ModelInfo.Architecture}.max_output_tokens"] = JsonInt(model.ModelInfo.MaxOutputTokens),
-        [$"{model.ModelInfo.Architecture}.text_only"] = JsonBool(model.ModelInfo.TextOnly),
-        [$"{model.ModelInfo.Architecture}.deprecated"] = JsonBool(model.ModelInfo.Deprecated),
-        [$"{model.ModelInfo.Architecture}.availability"] = JsonString(model.ModelInfo.Availability)
-    },
-    model.Capabilities,
-    model.ModifiedAt);
+static OllamaShowResponse ToOllamaShow(IAiProvider provider, AiModel model, ModelOverride? overrides = null)
+{
+    var arch = overrides?.Architecture ?? model.ModelInfo.Architecture;
+    var ctxLen = overrides?.ContextLength ?? model.ModelInfo.ContextLength;
+    var maxOut = overrides?.MaxOutputTokens ?? model.ModelInfo.MaxOutputTokens;
+    var paramCount = overrides?.ParameterCount ?? model.ModelInfo.ParameterCount;
+    var activeCount = overrides?.ActiveParameterCount ?? model.ModelInfo.ActiveParameterCount;
+    var textOnly = overrides?.TextOnly ?? model.ModelInfo.TextOnly;
+    var deprecated = overrides?.Deprecated ?? model.ModelInfo.Deprecated;
+    var availability = overrides?.Availability ?? model.ModelInfo.Availability;
+    var displayName = overrides?.DisplayName ?? model.DisplayName;
+    var capabilities = overrides?.Capabilities ?? model.Capabilities;
+
+    return new OllamaShowResponse(
+        "",
+        "",
+        $"num_ctx {ctxLen}\nnum_predict {maxOut}",
+        "",
+        ToOllamaDetails(model.Details, overrides),
+        new Dictionary<string, JsonElement>
+        {
+            ["general.name"] = JsonString(model.Id),
+            ["general.display_name"] = JsonString(displayName),
+            ["general.architecture"] = JsonString(arch),
+            ["general.parameter_count"] = JsonLong(paramCount),
+            [$"{arch}.active_parameter_count"] = JsonLong(activeCount),
+            [$"{arch}.context_length"] = JsonInt(ctxLen),
+            [$"{arch}.max_output_tokens"] = JsonInt(maxOut),
+            [$"{arch}.text_only"] = JsonBool(textOnly),
+            [$"{arch}.deprecated"] = JsonBool(deprecated),
+            [$"{arch}.availability"] = JsonString(availability)
+        },
+        capabilities,
+        model.ModifiedAt);
+}
 
 static string ToExternalModelName(IAiProvider provider, AiModel model) => $"{provider.Name}/{model.Id}";
 
@@ -321,13 +363,13 @@ static JsonDocument RewriteModel(JsonDocument request, string upstreamModel)
     return JsonDocument.Parse(stream);
 }
 
-static OllamaDetails ToOllamaDetails(AiModelDetails details) => new(
+static OllamaDetails ToOllamaDetails(AiModelDetails details, ModelOverride? overrides = null) => new(
     details.ParentModel,
     details.Format,
     details.Family,
     details.Families,
-    details.ParameterSize,
-    details.QuantizationLevel);
+    overrides?.ParameterSize ?? details.ParameterSize,
+    overrides?.QuantizationLevel ?? details.QuantizationLevel);
 
 static JsonElement JsonString(string value) =>
     JsonSerializer.SerializeToElement(value, ApiJsonSerializerContext.Default.String);

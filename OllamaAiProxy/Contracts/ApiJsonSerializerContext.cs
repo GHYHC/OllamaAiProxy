@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using OllamaAiProxy.Services;
 
 namespace OllamaAiProxy.Contracts;
 
@@ -12,5 +13,6 @@ namespace OllamaAiProxy.Contracts;
 [JsonSerializable(typeof(bool))]
 [JsonSerializable(typeof(int))]
 [JsonSerializable(typeof(long))]
+[JsonSerializable(typeof(ModelOverride))]
 [JsonSerializable(typeof(string))]
 internal sealed partial class ApiJsonSerializerContext : JsonSerializerContext;
