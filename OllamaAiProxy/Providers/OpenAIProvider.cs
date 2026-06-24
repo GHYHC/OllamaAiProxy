@@ -21,7 +21,7 @@ public sealed class OpenAIProvider : IAiProvider
     {
         _httpClient = httpClient;
         _options = options;
-        _httpClient.BaseAddress = new Uri(_options.BaseUrl);
+        _httpClient.BaseAddress = EnsureTrailingSlash(_options.BaseUrl);
         _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
 
@@ -48,7 +48,7 @@ public sealed class OpenAIProvider : IAiProvider
 
             if (TryGetApiKey() is { } apiKey)
             {
-                using var request = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
+                using var request = new HttpRequestMessage(HttpMethod.Get, "v1/models");
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 
                 using var response = await _httpClient.SendAsync(request, cancellationToken);
@@ -108,7 +108,7 @@ public sealed class OpenAIProvider : IAiProvider
 
     private HttpRequestMessage CreateChatRequest(HttpContent content)
     {
-        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        var request = new HttpRequestMessage(HttpMethod.Post, "v1/chat/completions")
         {
             Content = content
         };
@@ -265,5 +265,7 @@ public sealed class OpenAIProvider : IAiProvider
     {
         public static ModelTokenLimits Unknown { get; } = new(0, 0);
     }
-}
+
+    private static Uri EnsureTrailingSlash(string url) =>
+        new(url.EndsWith('/') ? url : url + "/");}
 
