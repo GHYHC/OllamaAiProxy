@@ -247,7 +247,7 @@ static DeepSeekOptions ReadDeepSeekOption(IConfiguration section)
     var options = new DeepSeekOptions();
     options.Name = section.GetValue(nameof(DeepSeekOptions.Name), options.Name) ?? options.Name;
     options.BaseUrl = section.GetValue(nameof(DeepSeekOptions.BaseUrl), options.BaseUrl) ?? options.BaseUrl;
-    options.ApiKey = section.GetValue<string?>(nameof(DeepSeekOptions.ApiKey));
+    options.ApiKeys = section.GetSection("ApiKeys").Get<string[]>() ?? [];
     return options;
 }
 
@@ -267,7 +267,7 @@ static OpenAIOptions ReadOpenAIOption(IConfiguration section)
     var options = new OpenAIOptions();
     options.Name = section.GetValue(nameof(OpenAIOptions.Name), options.Name) ?? options.Name;
     options.BaseUrl = section.GetValue(nameof(OpenAIOptions.BaseUrl), options.BaseUrl) ?? options.BaseUrl;
-    options.ApiKey = section.GetValue<string?>(nameof(OpenAIOptions.ApiKey));
+    options.ApiKeys = section.GetSection("ApiKeys").Get<string[]>() ?? [];
     return options;
 }
 

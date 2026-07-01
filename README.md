@@ -22,6 +22,7 @@ OllamaAiProxy 是一个轻量级 ASP.NET Core 代理服务，用来把国内外�
   - `DeepSeek`：默认读取 `DEEPSEEK_API_KEY`，Base URL 为 `https://api.deepseek.com`。
   - `OpenAI`：默认读取 `OPENAI_API_KEY`，Base URL 为 `https://api.openai.com`。
 - 支持多个同类型 provider，通过不同 `Name` 区分。
+- **每个 provider 可配置多个 ApiKey，429 限流时自动轮换到下一个可用 Key。**
 - 自带浏览器测试页：启动后访问 `http://localhost:11434/`。
 - 可选请求日志：通过 `RequestLogging` 配置启用。
 
@@ -46,6 +47,8 @@ OllamaAiProxy 是一个轻量级 ASP.NET Core 代理服务，用来把国内外�
    $env:OPENAI_API_KEY="你的 API Key"
    ```
 
+   > 也可以在 `appsettings.json` 的 `ApiKeys` 数组中配置多个 Key（见下文配置说明）。
+
 2. 启动服务。
 
    ```powershell
@@ -66,7 +69,8 @@ OllamaAiProxy 是一个轻量级 ASP.NET Core 代理服务，用来把国内外�
 
 ## 配置国内 OpenAI 兼容网关
 
-如果你的国内模型服务兼容 OpenAI API，可以把它配置到 `Providers:OpenAI`，并给它一个更明确的 provider 名称。例如：
+如果你的国内模型服务兼容 OpenAI API，可以把它配置到 `Providers:OpenAI`，并给它一个更明确的 provider 名称。每个 provider 可以配置多个 ApiKey，当一个 Key 触发 HTTP 429 限流时会自动轮换到下一个可用 Key。
+例如：
 
 ```json
 {
@@ -75,24 +79,29 @@ OllamaAiProxy 是一个轻量级 ASP.NET Core 代理服务，用来把国内外�
       {
         "Name": "aliyun",
         "BaseUrl": "https://dashscope.aliyuncs.com/compatible-mode",
-        "ApiKey": "你的 API Key"
+        "ApiKeys": [ "你的 API Key" ]
       },
       {
         "Name": "openai",
         "BaseUrl": "https://api.openai.com",
-        "ApiKey": ""
+        "ApiKeys": [ "sk-xxx", "sk-yyy" ]
       }
     ],
     "DeepSeek": [
       {
         "Name": "deepseek",
         "BaseUrl": "https://api.deepseek.com",
-        "ApiKey": ""
+        "ApiKeys": [
+          "你的第一个 DeepSeek Key",
+          "你的第二个 DeepSeek Key"
+        ]
       }
     ]
   }
 }
 ```
+
+> 当 `ApiKeys` 数组为空时，会回退到读取对应名称的环境变量（`DEEPSEEK_API_KEY` / `OPENAI_API_KEY`）作为单个 Key，保持与旧版本兼容。
 
 配置后，客户端看到的模型名会带 provider 前缀，例如：
 
@@ -155,8 +164,8 @@ aliyun/qwen-max
 | 变量 | 说明 | 默认值 |
 | --- | --- | --- |
 | `PORT` | 本地监听端口 | `11434` |
-| `DEEPSEEK_API_KEY` | DeepSeek API Key | 空 |
-| `OPENAI_API_KEY` | OpenAI 或兼容服务 API Key | 空 |
+| `DEEPSEEK_API_KEY` | DeepSeek API Key（仅当配置文件中的 `ApiKeys` 为空时生效） | 空 |
+| `OPENAI_API_KEY` | OpenAI 或兼容服务 API Key（仅当配置文件中的 `ApiKeys` 为空时生效） | 空 |
 
 ## 请求示例
 
@@ -196,3 +205,35 @@ curl http://localhost:11434/api/show `
 ```
 
 日志可能包含提示词、响应内容或敏感信息，排查完成后建议关闭。
+
+## ApiKey 多 Key 与 429 自动切换
+
+每个 provider 的 `ApiKeys` 支持配置多个 API Key。当一个 Key 触发上游 HTTP 429（Rate Limit）时，代理会自动将该 Key 标记为不可用，并切换到下一个可用 Key 重试请求。所有 Key 都被标记后，最后一个 429 响应会被返回给客户端。
+
+### 配置示例：多个 DeepSeek Key
+
+```json
+{
+  "Providers": {
+    "DeepSeek": [
+      {
+        "Name": "deepseek",
+        "BaseUrl": "https://api.deepseek.com",
+        "ApiKeys": [
+          "sk-第一个Key",
+          "sk-第二个Key",
+          "sk-第三个Key"
+        ]
+      }
+    ]
+  }
+}
+```
+
+### 常见问题
+
+**Q: 配置了多个 Key，但请求还是返回 429？**
+A: 所有 Key 都达到限流时会返回最终的 429。如果这种情况频繁出现，建议增加更多 Key 或降低请求频率。
+
+**Q: 环境变量和配置文件可以混用吗？**
+A: 配置文件的 `ApiKeys` 优先级高于环境变量。当 `ApiKeys` 为空数组时才会读取环境变量。

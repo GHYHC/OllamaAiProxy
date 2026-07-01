@@ -14,6 +14,7 @@ public sealed class OpenAIProvider : IAiProvider
 
     private readonly HttpClient _httpClient;
     private readonly OpenAIOptions _options;
+    private readonly ApiKeyManager _apiKeyManager;
     private readonly SemaphoreSlim _modelsCacheLock = new(1, 1);
     private ModelsCache? _modelsCache;
 
@@ -21,8 +22,30 @@ public sealed class OpenAIProvider : IAiProvider
     {
         _httpClient = httpClient;
         _options = options;
+        _apiKeyManager = CreateApiKeyManager(options);
         _httpClient.BaseAddress = EnsureTrailingSlash(_options.BaseUrl);
         _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+    }
+
+    private static ApiKeyManager CreateApiKeyManager(OpenAIOptions options)
+    {
+        // 优先使用配置中的 ApiKeys；如果数组为空则尝试环境变量（作为单 Key）。
+        var keys = options.ApiKeys is { Length: > 0 }
+            ? options.ApiKeys
+            : TryGetEnvKeys();
+
+        if (keys.Length == 0)
+            throw new InvalidOperationException(
+                $"No API key configured for {options.Name}. Set ApiKeys in configuration or " +
+                $"the {ApiKeyEnvironmentVariable} environment variable.");
+
+        return new ApiKeyManager(keys);
+    }
+
+    private static string[] TryGetEnvKeys()
+    {
+        var env = Environment.GetEnvironmentVariable(ApiKeyEnvironmentVariable);
+        return string.IsNullOrWhiteSpace(env) ? [] : [env];
     }
 
     public string Name => string.IsNullOrWhiteSpace(_options.Name) ? "openai" : _options.Name;
@@ -46,22 +69,25 @@ public sealed class OpenAIProvider : IAiProvider
             if (cached is not null && cached.ExpiresAt > now)
                 return cached.Models;
 
-            if (TryGetApiKey() is { } apiKey)
-            {
-                using var request = new HttpRequestMessage(HttpMethod.Get, "v1/models");
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            var apiKey = _apiKeyManager.GetCurrentKey();
+            using var request = new HttpRequestMessage(HttpMethod.Get, "v1/models");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 
-                using var response = await _httpClient.SendAsync(request, cancellationToken);
-                var body = await response.Content.ReadAsStringAsync(cancellationToken);
-                if (response.IsSuccessStatusCode)
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (response.IsSuccessStatusCode)
+            {
+                var models = ParseModels(body, Family);
+                if (models.Count > 0)
                 {
-                    var models = ParseModels(body, Family);
-                    if (models.Count > 0)
-                    {
-                        _modelsCache = new ModelsCache(models, now.Add(ModelsCacheTtl));
-                        return models;
-                    }
+                    _modelsCache = new ModelsCache(models, now.Add(ModelsCacheTtl));
+                    return models;
                 }
+            }
+            else if ((int)response.StatusCode == 429)
+            {
+                // /models 请求的 429 也标记 Key 不可用
+                _apiKeyManager.MarkCurrentBlocked();
             }
         }
         catch
@@ -84,26 +110,69 @@ public sealed class OpenAIProvider : IAiProvider
 
     public async Task<ProviderChatResponse> CreateChatCompletionAsync(JsonDocument request, CancellationToken cancellationToken)
     {
-        using var content = CreateJsonContent(request);
-        using var upstreamRequest = CreateChatRequest(content);
-        var response = await _httpClient.SendAsync(upstreamRequest, cancellationToken);
-        return await ProviderChatResponse.BufferAsync(response, cancellationToken);
+        // 最多重试所有 Key 的次数
+        var maxAttempts = _apiKeyManager.KeyCount;
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            using var content = CreateJsonContent(request);
+            var upstreamRequest = CreateChatRequest(content);
+            var response = await _httpClient.SendAsync(upstreamRequest, cancellationToken);
+
+            if ((int)response.StatusCode != 429)
+                return await ProviderChatResponse.BufferAsync(response, cancellationToken);
+
+            // 429: 标记当前 Key 不可用，切换到下一个 Key 重试
+            var (_, hasAvailable) = _apiKeyManager.MarkCurrentBlocked();
+            if (!hasAvailable)
+                return await ProviderChatResponse.BufferAsync(response, cancellationToken);
+        }
+
+        // 所有 Key 都尝试完仍 429，返回最后的 429 响应
+        using var finalContent = CreateJsonContent(request);
+        var finalRequest = CreateChatRequest(finalContent);
+        var finalResponse = await _httpClient.SendAsync(finalRequest, cancellationToken);
+        return await ProviderChatResponse.BufferAsync(finalResponse, cancellationToken);
     }
 
     public async Task<ProviderChatResponse> StreamChatCompletionAsync(JsonDocument request, CancellationToken cancellationToken)
     {
-        using var content = CreateJsonContent(request);
-        using var upstreamRequest = CreateChatRequest(content);
-        upstreamRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
-
-        var response = await _httpClient.SendAsync(upstreamRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        // 非流式 429 重试：先尝试非流式探测，如果 429 则轮换 Key
+        var maxAttempts = _apiKeyManager.KeyCount;
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
-            // 错误响应先缓存为文本，endpoint 才能正常返回上游状态码和错误体。
-            return await ProviderChatResponse.BufferAsync(response, cancellationToken);
+            using var content = CreateJsonContent(request);
+            var upstreamRequest = CreateChatRequest(content);
+            upstreamRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+
+            var response = await _httpClient.SendAsync(upstreamRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                if ((int)response.StatusCode == 429)
+                {
+                    var (_, hasAvailable) = _apiKeyManager.MarkCurrentBlocked();
+                    if (hasAvailable)
+                        continue; // 换 Key 重试
+
+                    // 所有 Key 都用完了，返回最后这个 429
+                    return await ProviderChatResponse.BufferAsync(response, cancellationToken);
+                }
+
+                // 非 429 错误，缓存并返回
+                return await ProviderChatResponse.BufferAsync(response, cancellationToken);
+            }
+
+            return ProviderChatResponse.Stream(response);
         }
 
-        return ProviderChatResponse.Stream(response);
+        // 兜底（不应到达此处）
+        using var fallbackContent = CreateJsonContent(request);
+        var fallbackRequest = CreateChatRequest(fallbackContent);
+        fallbackRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+        var fallbackResponse = await _httpClient.SendAsync(fallbackRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        if (!fallbackResponse.IsSuccessStatusCode)
+            return await ProviderChatResponse.BufferAsync(fallbackResponse, cancellationToken);
+
+        return ProviderChatResponse.Stream(fallbackResponse);
     }
 
     private HttpRequestMessage CreateChatRequest(HttpContent content)
@@ -113,18 +182,10 @@ public sealed class OpenAIProvider : IAiProvider
             Content = content
         };
 
-        if (TryGetApiKey() is { } apiKey)
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+        var apiKey = _apiKeyManager.GetCurrentKey();
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 
         return request;
-    }
-
-    private string? TryGetApiKey()
-    {
-        var apiKey = string.IsNullOrWhiteSpace(_options.ApiKey)
-            ? Environment.GetEnvironmentVariable(ApiKeyEnvironmentVariable)
-            : _options.ApiKey;
-        return string.IsNullOrWhiteSpace(apiKey) ? null : apiKey;
     }
 
     private static StringContent CreateJsonContent(JsonDocument request)
