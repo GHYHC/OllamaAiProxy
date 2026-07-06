@@ -21,6 +21,7 @@ OllamaAiProxy 是一个轻量级 ASP.NET Core 代理服务，用来把国内外�
 - 内置 provider：
   - `DeepSeek`：默认读取 `DEEPSEEK_API_KEY`，Base URL 为 `https://api.deepseek.com`。
   - `OpenAI`：默认读取 `OPENAI_API_KEY`，Base URL 为 `https://api.openai.com`。
+  - `VolcengineCodingPlan`：火山方舟（VolcengineCodingPlan）编程场景入口，默认读取 `VOLCENGINE_CODING_PLAN_API_KEY`，Base URL 为 `https://ark.cn-beijing.volces.com/api/coding/v3`。
 - 支持多个同类型 provider，通过不同 `Name` 区分。
 - **每个 provider 可配置多个 ApiKey，429 限流时自动轮换到下一个可用 Key。**
 - 自带浏览器测试页：启动后访问 `http://localhost:11434/`。
@@ -114,6 +115,44 @@ aliyun/qwen-max
 
 请求 `/v1/chat/completions` 时也必须使用这种 `provider/model` 格式，本项目会在转发给上游前自动去掉 provider 前缀。
 
+## 火山方舟（VolcengineCodingPlan）provider
+
+火山方舟 Coding Plan 提供兼容 OpenAI 的聊天补全接口，Base URL 必须使用 `https://ark.cn-beijing.volces.com/api/coding/v3`（请勿使用 `/api/v3`，否则不消耗套餐额度并会产生额外费用）。模型列表固定为 Coding Plan 支持的模型（来源：方舟 Coding Plan 文档），不再从 `/models` 接口拉取，避免误用非套餐模型。聊天补全走 `POST /chat/completions`，`model` 字段直接使用下列 Model Name。
+
+内置模型（共 11 个，均支持函数调用与深度思考；模型名前缀为 `VolcengineCodingPlan/`，例如 `VolcengineCodingPlan/doubao-seed-2.0-code`）：
+
+```text
+doubao-seed-2.0-code      上下文 256K / 输出 128K / 视觉
+doubao-seed-2.0-pro       上下文 256K / 输出 128K / 视觉
+doubao-seed-2.0-lite      上下文 256K / 输出 128K / 视觉
+doubao-seed-code          上下文 256K / 输出 32K / 视觉
+minimax-m2.7              上下文 200K / 输出 128K
+minimax-m3                上下文 512K / 输出 128K / 视觉
+glm-5.2                   上下文 1M / 输出 128K
+deepseek-v4-flash         上下文 1M / 输出 384K
+deepseek-v4-pro           上下文 1M / 输出 384K
+kimi-k2.6                 上下文 256K / 输出 32K / 视觉
+kimi-k2.7-code            上下文 256K / 输出 32K / 视觉
+```
+
+配置示例：
+
+```json
+{
+  "Providers": {
+    "VolcengineCodingPlan": [
+      {
+        "Name": "VolcengineCodingPlan",
+        "BaseUrl": "https://ark.cn-beijing.volces.com/api/coding/v3",
+        "ApiKeys": [ "ark-你的ApiKey" ]
+      }
+    ]
+  }
+}
+```
+
+客户端请求 `/v1/chat/completions` 时使用 `VolcengineCodingPlan/<Model Name>` 格式，代理会去掉前缀后转发给上游。
+
 ## Visual Studio 2026 + GitHub Copilot 接入国内大模型
 
 本项目的核心用途之一，是给 Visual Studio 2026 中的 GitHub Copilot 提供一个本地模型代理，让 Copilot 可以通过本机 Ollama/OpenAI 兼容入口发现并调用国内大模型。
@@ -166,6 +205,7 @@ aliyun/qwen-max
 | `PORT` | 本地监听端口 | `11434` |
 | `DEEPSEEK_API_KEY` | DeepSeek API Key（仅当配置文件中的 `ApiKeys` 为空时生效） | 空 |
 | `OPENAI_API_KEY` | OpenAI 或兼容服务 API Key（仅当配置文件中的 `ApiKeys` 为空时生效） | 空 |
+| `VOLCENGINE_CODING_PLAN_API_KEY` | 火山方舟 VolcengineCodingPlan API Key（仅当配置文件中的 `ApiKeys` 为空时生效） | 空 |
 
 ## 请求示例
 

@@ -218,6 +218,11 @@ static IReadOnlyList<IAiProvider> CreateProviders(IConfiguration configuration, 
         providers.Add(new OpenAIProvider(CreateProviderHttpClient(httpClientFactory), options));
     }
 
+    foreach (var options in ReadVolcengineCodingPlanOptions(configuration.GetSection(VolcengineCodingPlanOptions.SectionName)))
+    {
+        providers.Add(new VolcengineCodingPlanProvider(CreateProviderHttpClient(httpClientFactory), options));
+    }
+
     if (providers.Count == 0)
         throw new InvalidOperationException("At least one AI provider must be configured.");
 
@@ -267,6 +272,26 @@ static OpenAIOptions ReadOpenAIOption(IConfiguration section)
     var options = new OpenAIOptions();
     options.Name = section.GetValue(nameof(OpenAIOptions.Name), options.Name) ?? options.Name;
     options.BaseUrl = section.GetValue(nameof(OpenAIOptions.BaseUrl), options.BaseUrl) ?? options.BaseUrl;
+    options.ApiKeys = section.GetSection("ApiKeys").Get<string[]>() ?? [];
+    return options;
+}
+
+static IReadOnlyList<VolcengineCodingPlanOptions> ReadVolcengineCodingPlanOptions(IConfigurationSection section)
+{
+    if (!section.Exists())
+        return Array.Empty<VolcengineCodingPlanOptions>();
+
+    if (section.GetChildren().Any(x => int.TryParse(x.Key, out _)))
+        return section.GetChildren().Select(ReadVolcengineCodingPlanOption).ToArray();
+
+    return new[] { ReadVolcengineCodingPlanOption(section) };
+}
+
+static VolcengineCodingPlanOptions ReadVolcengineCodingPlanOption(IConfiguration section)
+{
+    var options = new VolcengineCodingPlanOptions();
+    options.Name = section.GetValue(nameof(VolcengineCodingPlanOptions.Name), options.Name) ?? options.Name;
+    options.BaseUrl = section.GetValue(nameof(VolcengineCodingPlanOptions.BaseUrl), options.BaseUrl) ?? options.BaseUrl;
     options.ApiKeys = section.GetSection("ApiKeys").Get<string[]>() ?? [];
     return options;
 }
