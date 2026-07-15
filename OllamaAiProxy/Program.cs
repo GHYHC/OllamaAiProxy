@@ -113,6 +113,31 @@ app.MapDelete("/api/model-overrides/{provider}/{model}", async (string provider,
     return await overridesStore.RemoveAsync(key) ? Results.Ok() : Results.NotFound();
 });
 
+// OpenAI 兼容模型列表接口：把厂商无关的模型元数据转换成 OpenAI /v1/models 响应格式。
+app.MapGet("/v1/models", async (IAiProviderRegistry registry, CancellationToken cancellationToken) =>
+{
+    var models = await registry.GetAllModelsAsync(cancellationToken);
+    return Results.Json(new OpenAiModelsResponse(
+        "list",
+        models.Select(x => ToOpenAiModel(x.Provider, x.Model)).ToArray()),
+        ApiJsonSerializerContext.Default.OpenAiModelsResponse);
+});
+
+// OpenAI 兼容单个模型查询接口：按 provider/model 路径探测指定模型是否存在。
+app.MapGet("/v1/models/{*model}", async (string model, IAiProviderRegistry registry, CancellationToken cancellationToken) =>
+{
+    if (string.IsNullOrWhiteSpace(model) || !IsExternalModelName(model))
+        return Error("model must use 'provider/model' format", StatusCodes.Status400BadRequest);
+
+    var resolved = await registry.ResolveModelAsync(model, cancellationToken);
+    if (resolved is null)
+        return Error($"model '{model}' not found", StatusCodes.Status404NotFound);
+
+    return Results.Json(
+        ToOpenAiModel(resolved.Value.Provider, resolved.Value.Model),
+        ApiJsonSerializerContext.Default.OpenAiModel);
+});
+
 // OpenAI 兼容聊天接口：provider 负责厂商转发，这一层只做通用校验和响应透传。
 app.MapPost("/v1/chat/completions", async (HttpContext context, IAiProviderRegistry registry) =>
 {
@@ -321,6 +346,13 @@ static OllamaTag ToOllamaTag(IAiProvider provider, AiModel model) => new(
     model.Size,
     model.Digest,
     ToOllamaDetails(model.Details));
+
+// 将厂商无关模型信息转换成 OpenAI /v1/models 中的单个模型对象。
+static OpenAiModel ToOpenAiModel(IAiProvider provider, AiModel model) => new(
+    ToExternalModelName(provider, model),
+    model.Object,
+    model.Created,
+    model.OwnedBy);
 
 // 将厂商无关模型信息转换成 Ollama /api/show 的模型详情响应。
 static OllamaShowResponse ToOllamaShow(IAiProvider provider, AiModel model, ModelOverride? overrides = null)

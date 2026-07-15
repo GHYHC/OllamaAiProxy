@@ -17,6 +17,8 @@ OllamaAiProxy 是一个轻量级 ASP.NET Core 代理服务，用来把国内外�
   - `GET /api/tags`：返回可用模型列表。
   - `POST /api/show`：返回指定模型详情。
 - OpenAI 兼容接口：
+  - `GET /v1/models`：返回可用模型列表（OpenAI 兼容格式）。
+  - `GET /v1/models/{provider}/{model}`：查询单个模型详情。
   - `POST /v1/chat/completions`：转发非流式和流式聊天请求。
 - 内置 provider：
   - `DeepSeek`：默认读取 `DEEPSEEK_API_KEY`，Base URL 为 `https://api.deepseek.com`。
@@ -208,6 +210,12 @@ kimi-k2.7-code            上下文 256K / 输出 32K / 视觉
 | `VOLCENGINE_CODING_PLAN_API_KEY` | 火山方舟 VolcengineCodingPlan API Key（仅当配置文件中的 `ApiKeys` 为空时生效） | 空 |
 
 ## 请求示例
+
+查看模型列表：
+
+`powershell
+curl http://localhost:11434/v1/models
+``r
 
 聊天补全：
 

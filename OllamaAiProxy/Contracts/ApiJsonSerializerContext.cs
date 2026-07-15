@@ -9,6 +9,8 @@ namespace OllamaAiProxy.Contracts;
 [JsonSerializable(typeof(VersionResponse))]
 [JsonSerializable(typeof(OllamaTagsResponse))]
 [JsonSerializable(typeof(OllamaShowResponse))]
+[JsonSerializable(typeof(OpenAiModelsResponse))]
+[JsonSerializable(typeof(OpenAiModel))]
 [JsonSerializable(typeof(Dictionary<string, System.Text.Json.JsonElement>))]
 [JsonSerializable(typeof(bool))]
 [JsonSerializable(typeof(int))]

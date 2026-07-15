@@ -43,3 +43,13 @@ public sealed record OllamaShowResponse(
     IReadOnlyDictionary<string, JsonElement> ModelInfo,
     IReadOnlyList<string> Capabilities,
     string ModifiedAt);
+
+public sealed record OpenAiModelsResponse(
+    string Object,
+    IReadOnlyList<OpenAiModel> Data);
+
+public sealed record OpenAiModel(
+    string Id,
+    string Object,
+    long Created,
+    string OwnedBy);
