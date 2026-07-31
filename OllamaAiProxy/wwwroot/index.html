@@ -163,7 +163,7 @@
 
     .toolbar {
       display: grid;
-      grid-template-columns: minmax(260px, 390px) auto;
+      grid-template-columns: minmax(260px, 360px) minmax(210px, 260px) auto;
       gap: 10px;
       align-items: end;
     }
@@ -482,6 +482,8 @@
       width: 96px;
     }
 
+
+
     .raw {
       flex: 1;
       min-height: 220px;
@@ -561,7 +563,7 @@
       }
 
       .toolbar {
-        grid-template-columns: 1fr auto;
+        grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
       }
 
       .workspace {
@@ -631,6 +633,13 @@
         <div class="field">
           <label for="modelSelect">当前模型</label>
           <select id="modelSelect"></select>
+        </div>
+        <div class="field">
+          <label for="endpointSelect">测试接口</label>
+          <select id="endpointSelect" title="选择聊天验证使用的接口">
+            <option value="chat">/v1/chat/completions</option>
+            <option value="responses">/v1/responses</option>
+          </select>
         </div>
         <button id="reloadModels" class="secondary" type="button" title="刷新模型列表">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 0-15.3-6.4"/><path d="M3 4v6h6"/><path d="M3 12a9 9 0 0 0 15.3 6.4"/><path d="M21 20v-6h-6"/></svg>
@@ -715,6 +724,7 @@
         <div id="messages" class="messages"></div>
         <form id="chatForm" class="composer">
           <textarea id="prompt" placeholder="输入一句话测试接口，例如：你好，简单介绍一下你自己。" required></textarea>
+
           <div class="send-stack">
             <button id="send" type="submit">
               <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
@@ -739,6 +749,8 @@
             <div class="endpoint"><span class="method">POST</span><span class="path">/api/show</span></div>
             <div class="endpoint"><span class="method">GET</span><span class="path">/v1/models</span></div>
             <div class="endpoint"><span class="method">POST</span><span class="path">/v1/chat/completions</span></div>
+            <div class="endpoint"><span class="method">POST</span><span class="path">/v1/responses</span></div>
+            <div class="endpoint"><span class="method">GET</span><span class="path">/v1/responses/{id}</span></div>
           </div>
           <div id="raw" class="raw">等待请求...</div>
           <p class="hint">原始响应会显示最近一次模型、详情或聊天请求结果，便于对照客户端探测行为。</p>
@@ -759,6 +771,7 @@
       modelDetails: document.getElementById("modelDetails"),
       modelSelect: document.getElementById("modelSelect"),
       prompt: document.getElementById("prompt"),
+      endpointSelect: document.getElementById("endpointSelect"),
       quickPrompt: document.getElementById("quickPrompt"),
       raw: document.getElementById("raw"),
       reloadModels: document.getElementById("reloadModels"),
@@ -1154,6 +1167,28 @@
       return typeof value === "number" && value > 0 ? value.toLocaleString("zh-CN") : "-";
     }
 
+    function extractResponsesAnswer(data) {
+      // 优先取顶层 output_text；否则在 output 里找 message 项的 output_text part，
+      // 避免把 reasoning 思考文本误当成最终答案（DeepSeek/火山方舟的响应无顶层 output_text）。
+      if (typeof data?.output_text === "string") return data.output_text;
+      const items = Array.isArray(data?.output) ? data.output : [];
+      for (const item of items) {
+        if (item?.type !== "message" || !Array.isArray(item.content)) continue;
+        const text = item.content
+          .filter((p) => p?.type === "output_text" && typeof p?.text === "string")
+          .map((p) => p.text)
+          .join("");
+        if (text) return text;
+      }
+      // 兜底：任意 content 里第一个带 text 的 part。
+      for (const item of items) {
+        const part = Array.isArray(item?.content) ? item.content.find((p) => typeof p?.text === "string") : null;
+        if (part) return part.text;
+      }
+      return "";
+    }
+
+
     async function sendMessage(content) {
       const model = els.modelSelect.value;
       if (!model) {
@@ -1169,18 +1204,23 @@
       els.latency.classList.remove("error", "ok");
       const started = performance.now();
 
+      const useResponses = els.endpointSelect.value === "responses";
+      const endpoint = useResponses ? "/v1/responses" : "/v1/chat/completions";
+      // /v1/responses 直接透传上游，input 需要带 type 的 Responses item 格式。
+      const payload = useResponses
+        ? { model, stream: false, input: state.messages.map((m) => ({ type: "message", role: m.role, content: m.content })) }
+        : { model, stream: false, messages: state.messages };
+
       try {
-        const data = await requestJson("/v1/chat/completions", {
+        const data = await requestJson(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model,
-            stream: false,
-            messages: state.messages
-          })
+          body: JSON.stringify(payload)
         });
 
-        const answer = data?.choices?.[0]?.message?.content || JSON.stringify(data, null, 2);
+        const answer = useResponses
+          ? extractResponsesAnswer(data) || JSON.stringify(data, null, 2)
+          : data?.choices?.[0]?.message?.content || JSON.stringify(data, null, 2);
         state.messages.push({ role: "assistant", content: answer });
         appendMessage("assistant", answer);
         setRaw(data);
@@ -1226,6 +1266,7 @@
       els.prompt.focus();
     });
 
+
     els.quickPrompt.addEventListener("click", () => {
       els.prompt.value = "用中文用两句话说明你是什么模型，并返回当前请求是否通过 OllamaAiProxy 代理。";
       els.prompt.focus();
@@ -1241,7 +1282,7 @@
     els.cancelEdit.addEventListener("click", exitEditMode);
     els.saveOverrides.addEventListener("click", saveOverridesHandler);
 
-    appendMessage("system", "页面已就绪。选择模型后发送消息即可测试 /v1/chat/completions。");
+    appendMessage("system", "页面已就绪。选择模型后发送消息即可测试 /v1/chat/completions 或 /v1/responses。");
     loadHealth();
     loadModels();
   </script>

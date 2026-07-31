@@ -29,10 +29,11 @@ public sealed class OpenAIProvider : IAiProvider
 
     private static ApiKeyManager CreateApiKeyManager(OpenAIOptions options)
     {
-        // 优先使用配置中的 ApiKeys；如果数组为空则尝试环境变量（作为单 Key）。
-        var keys = options.ApiKeys is { Length: > 0 }
-            ? options.ApiKeys
-            : TryGetEnvKeys();
+        // 优先使用配置中的 ApiKeys；空白占位 Key（如 appsettings 中的空字符串）会被过滤，
+        // 过滤后为空则尝试环境变量（作为单 Key）。
+        var keys = options.ApiKeys.Where(x => !string.IsNullOrWhiteSpace(x)).ToArray();
+        if (keys.Length == 0)
+            keys = TryGetEnvKeys();
 
         if (keys.Length == 0)
             throw new InvalidOperationException(
@@ -108,15 +109,38 @@ public sealed class OpenAIProvider : IAiProvider
         return models.FirstOrDefault(x => string.Equals(x.Id, model, StringComparison.OrdinalIgnoreCase));
     }
 
-    public async Task<ProviderChatResponse> CreateChatCompletionAsync(JsonDocument request, CancellationToken cancellationToken)
+    public Task<ProviderChatResponse> CreateChatCompletionAsync(JsonDocument request, CancellationToken cancellationToken) =>
+        SendCoreAsync(request, "v1/chat/completions", stream: false, cancellationToken);
+
+    public Task<ProviderChatResponse> StreamChatCompletionAsync(JsonDocument request, CancellationToken cancellationToken) =>
+        SendCoreAsync(request, "v1/chat/completions", stream: true, cancellationToken);
+
+    /// <summary>转发非流式 OpenAI Responses 请求（/v1/responses）。</summary>
+    public Task<ProviderChatResponse> CreateResponseAsync(JsonDocument request, CancellationToken cancellationToken) =>
+        SendCoreAsync(request, "v1/responses", stream: false, cancellationToken);
+
+    /// <summary>转发流式 OpenAI Responses 请求（/v1/responses）。</summary>
+    public Task<ProviderChatResponse> StreamResponseAsync(JsonDocument request, CancellationToken cancellationToken) =>
+        SendCoreAsync(request, "v1/responses", stream: true, cancellationToken);
+
+    private async Task<ProviderChatResponse> SendCoreAsync(JsonDocument request, string path, bool stream, CancellationToken cancellationToken)
     {
         // 最多重试所有 Key 的次数
         var maxAttempts = _apiKeyManager.KeyCount;
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
             using var content = CreateJsonContent(request);
-            var upstreamRequest = CreateChatRequest(content);
-            var response = await _httpClient.SendAsync(upstreamRequest, cancellationToken);
+            var upstreamRequest = CreateRequest(content, path);
+            if (stream)
+                upstreamRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+
+            var response = await _httpClient.SendAsync(
+                upstreamRequest,
+                stream ? HttpCompletionOption.ResponseHeadersRead : HttpCompletionOption.ResponseContentRead,
+                cancellationToken);
+
+            if (stream && response.IsSuccessStatusCode)
+                return ProviderChatResponse.Stream(response);
 
             if ((int)response.StatusCode != 429)
                 return await ProviderChatResponse.BufferAsync(response, cancellationToken);
@@ -125,59 +149,27 @@ public sealed class OpenAIProvider : IAiProvider
             var (_, hasAvailable) = _apiKeyManager.MarkCurrentBlocked();
             if (!hasAvailable)
                 return await ProviderChatResponse.BufferAsync(response, cancellationToken);
+
+            response.Dispose();
         }
 
         // 所有 Key 都尝试完仍 429，返回最后的 429 响应
         using var finalContent = CreateJsonContent(request);
-        var finalRequest = CreateChatRequest(finalContent);
-        var finalResponse = await _httpClient.SendAsync(finalRequest, cancellationToken);
+        var finalRequest = CreateRequest(finalContent, path);
+        if (stream)
+            finalRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+        var finalResponse = await _httpClient.SendAsync(
+            finalRequest,
+            stream ? HttpCompletionOption.ResponseHeadersRead : HttpCompletionOption.ResponseContentRead,
+            cancellationToken);
+        if (stream && finalResponse.IsSuccessStatusCode)
+            return ProviderChatResponse.Stream(finalResponse);
         return await ProviderChatResponse.BufferAsync(finalResponse, cancellationToken);
     }
 
-    public async Task<ProviderChatResponse> StreamChatCompletionAsync(JsonDocument request, CancellationToken cancellationToken)
+    private HttpRequestMessage CreateRequest(HttpContent content, string path)
     {
-        // 非流式 429 重试：先尝试非流式探测，如果 429 则轮换 Key
-        var maxAttempts = _apiKeyManager.KeyCount;
-        for (var attempt = 0; attempt < maxAttempts; attempt++)
-        {
-            using var content = CreateJsonContent(request);
-            var upstreamRequest = CreateChatRequest(content);
-            upstreamRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
-
-            var response = await _httpClient.SendAsync(upstreamRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                if ((int)response.StatusCode == 429)
-                {
-                    var (_, hasAvailable) = _apiKeyManager.MarkCurrentBlocked();
-                    if (hasAvailable)
-                        continue; // 换 Key 重试
-
-                    // 所有 Key 都用完了，返回最后这个 429
-                    return await ProviderChatResponse.BufferAsync(response, cancellationToken);
-                }
-
-                // 非 429 错误，缓存并返回
-                return await ProviderChatResponse.BufferAsync(response, cancellationToken);
-            }
-
-            return ProviderChatResponse.Stream(response);
-        }
-
-        // 兜底（不应到达此处）
-        using var fallbackContent = CreateJsonContent(request);
-        var fallbackRequest = CreateChatRequest(fallbackContent);
-        fallbackRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
-        var fallbackResponse = await _httpClient.SendAsync(fallbackRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        if (!fallbackResponse.IsSuccessStatusCode)
-            return await ProviderChatResponse.BufferAsync(fallbackResponse, cancellationToken);
-
-        return ProviderChatResponse.Stream(fallbackResponse);
-    }
-
-    private HttpRequestMessage CreateChatRequest(HttpContent content)
-    {
-        var request = new HttpRequestMessage(HttpMethod.Post, "v1/chat/completions")
+        var request = new HttpRequestMessage(HttpMethod.Post, path)
         {
             Content = content
         };

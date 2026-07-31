@@ -33,6 +33,7 @@ builder.Services.AddSingleton<IReadOnlyList<IAiProvider>>(sp =>
     return CreateProviders(configuration, httpClientFactory);
 });
 builder.Services.AddSingleton<IAiProviderRegistry, AiProviderRegistry>();
+builder.Services.AddSingleton<ResponsesStore>();
 builder.Services.AddSingleton(sp =>
 {
     var overridesPath = Path.Combine(AppContext.BaseDirectory, "model-overrides.json");
@@ -192,6 +193,14 @@ app.MapPost("/v1/chat/completions", async (HttpContext context, IAiProviderRegis
     }
 });
 
+// Responses API 兼容接口：直接转发到上游 /v1/responses，仅把 model 重写为上游模型名，
+// 不翻译请求和响应；流式按字节透传。
+app.MapPost("/v1/responses", (HttpContext context, IAiProviderRegistry registry, ResponsesStore store) =>
+    ResponsesApi.HandleCreateAsync(context, registry, store));
+
+// Responses 查询接口：读取内存中缓存的非流式响应（最多保留 200 条）。
+app.MapGet("/v1/responses/{responseId}", (HttpContext context, ResponsesStore store) =>
+    ResponsesApi.HandleRetrieveAsync(context, store));
 Console.WriteLine("Ollama AI Proxy API");
 var startupRegistry = app.Services.GetRequiredService<IAiProviderRegistry>();
 Console.WriteLine($"Providers: {string.Join(", ", startupRegistry.Providers.Select(x => $"{x.Name}/{x.Family}"))}");
@@ -235,23 +244,37 @@ static IReadOnlyList<IAiProvider> CreateProviders(IConfiguration configuration, 
 
     foreach (var options in ReadDeepSeekOptions(configuration.GetSection(DeepSeekOptions.SectionName)))
     {
-        providers.Add(new DeepSeekProvider(CreateProviderHttpClient(httpClientFactory), options));
+        TryAddProvider(providers, () => new DeepSeekProvider(CreateProviderHttpClient(httpClientFactory), options));
     }
 
     foreach (var options in ReadOpenAIOptions(configuration.GetSection(OpenAIOptions.SectionName)))
     {
-        providers.Add(new OpenAIProvider(CreateProviderHttpClient(httpClientFactory), options));
+        TryAddProvider(providers, () => new OpenAIProvider(CreateProviderHttpClient(httpClientFactory), options));
     }
 
     foreach (var options in ReadVolcengineCodingPlanOptions(configuration.GetSection(VolcengineCodingPlanOptions.SectionName)))
     {
-        providers.Add(new VolcengineCodingPlanProvider(CreateProviderHttpClient(httpClientFactory), options));
+        TryAddProvider(providers, () => new VolcengineCodingPlanProvider(CreateProviderHttpClient(httpClientFactory), options));
     }
 
     if (providers.Count == 0)
         throw new InvalidOperationException("At least one AI provider must be configured.");
 
     return providers;
+}
+
+// 配置了 provider 但没有任何有效 API Key（含 appsettings 中的空白占位）时跳过该 provider，
+// 避免单个未配置 Key 的 provider 让整个代理无法启动。
+static void TryAddProvider(List<IAiProvider> providers, Func<IAiProvider> factory)
+{
+    try
+    {
+        providers.Add(factory());
+    }
+    catch (InvalidOperationException ex) when (ex.Message.StartsWith("No API key configured", StringComparison.Ordinal))
+    {
+        Console.WriteLine($"Skipping provider: {ex.Message}");
+    }
 }
 
 static HttpClient CreateProviderHttpClient(IHttpClientFactory httpClientFactory)

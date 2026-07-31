@@ -29,4 +29,10 @@ public interface IAiProvider
 
     /// <summary>转发流式 OpenAI 兼容聊天补全请求。</summary>
     Task<ProviderChatResponse> StreamChatCompletionAsync(JsonDocument request, CancellationToken cancellationToken);
+
+    /// <summary>转发非流式 OpenAI Responses 请求（/v1/responses）。</summary>
+    Task<ProviderChatResponse> CreateResponseAsync(JsonDocument request, CancellationToken cancellationToken);
+
+    /// <summary>转发流式 OpenAI Responses 请求（/v1/responses）。</summary>
+    Task<ProviderChatResponse> StreamResponseAsync(JsonDocument request, CancellationToken cancellationToken);
 }

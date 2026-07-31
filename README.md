@@ -20,6 +20,8 @@ OllamaAiProxy 是一个轻量级 ASP.NET Core 代理服务，用来把国内外�
   - `GET /v1/models`：返回可用模型列表（OpenAI 兼容格式）。
   - `GET /v1/models/{provider}/{model}`：查询单个模型详情。
   - `POST /v1/chat/completions`：转发非流式和流式聊天请求。
+  - `POST /v1/responses`：Responses API 兼容接口，直接转发到上游 `/v1/responses`，仅把 `model` 从 `provider/model` 重写为上游模型名，支持非流式和流式（按字节透传，保留上游 SSE 帧）。
+  - `GET /v1/responses/{id}`：查询缓存的非流式 Responses 响应（内存存储，重启后清空，最多保留 200 条；流式响应不做缓存）。
 - 内置 provider：
   - `DeepSeek`：默认读取 `DEEPSEEK_API_KEY`，Base URL 为 `https://api.deepseek.com`。
   - `OpenAI`：默认读取 `OPENAI_API_KEY`，Base URL 为 `https://api.openai.com`。
@@ -27,6 +29,7 @@ OllamaAiProxy 是一个轻量级 ASP.NET Core 代理服务，用来把国内外�
 - 支持多个同类型 provider，通过不同 `Name` 区分。
 - **每个 provider 可配置多个 ApiKey，429 限流时自动轮换到下一个可用 Key。**
 - 自带浏览器测试页：启动后访问 `http://localhost:11434/`。
+- **`/v1/responses` 说明**：请求与响应均原样透传上游（仅重写模型名），能力完全取决于上游是否支持 Responses 接口（如内置工具、`previous_response_id` 多轮续接等）；上游错误原样返回。模型名必须使用 `provider/model` 格式。
 - 可选请求日志：通过 `RequestLogging` 配置启用。
 
 ## 运行要求
