@@ -15,7 +15,7 @@ public sealed class VolcengineCodingPlanProvider : IAiProvider
 {
     private const string ApiKeyEnvironmentVariable = "VOLCENGINE_CODING_PLAN_API_KEY";
     private const long ModelCreated = 1_776_988_800;
-    private const string ModelModifiedAt = "2026-07-06T00:00:00Z";
+    private const string ModelModifiedAt = "2026-08-06T00:00:00Z";
 
     private readonly HttpClient _httpClient;
     private readonly VolcengineCodingPlanOptions _options;
@@ -146,23 +146,24 @@ public sealed class VolcengineCodingPlanProvider : IAiProvider
         return new StringContent(json, Encoding.UTF8, "application/json");
     }
 
-    // Coding Plan 支持的模型（来源：方舟 Coding Plan 快速开始「模型配置」）。
-    // 上下文长度/最大输出按官方文档与模型目录整理；视觉/思考能力按文档说明标注。
+    // Coding Plan 支持的模型（来源：方舟 Coding Plan 文档「支持的模型」）。
+    // 上下文长度/最大输出按官方文档整理；视觉/思考能力按文档说明标注。
+    // 已移除文档标注「即将下线」的模型：doubao-seed-2.0-code、doubao-seed-2.0-pro、
+    // doubao-seed-code、minimax-m2.7、kimi-k2.6。
     private static IReadOnlyList<AiModel> GetKnownModels(string family)
     {
         return new[]
         {
-            CreateModel("doubao-seed-2.0-code", "Doubao Seed 2.0 Code", 262144, 131072, vision: true, family),
-            CreateModel("doubao-seed-2.0-pro", "Doubao Seed 2.0 Pro", 262144, 131072, vision: true, family),
+            // ark-code-latest 为控制台路由别名，使用控制台中当前选定的模型；上下文/输出随所选模型而定，
+            // 这里取保守估值，实际以上游为准。
+            CreateModel("ark-code-latest", "Ark Code Latest", 262144, 65536, vision: false, family),
+            CreateModel("doubao-seed-2.1-turbo", "Doubao Seed 2.1 Turbo", 262144, 65536, vision: true, family),
             CreateModel("doubao-seed-2.0-lite", "Doubao Seed 2.0 Lite", 262144, 131072, vision: true, family),
-            CreateModel("doubao-seed-code", "Doubao Seed Code", 262144, 32768, vision: true, family),
-            CreateModel("minimax-m2.7", "MiniMax M2.7", 204800, 131072, vision: false, family),
-            CreateModel("minimax-m3", "MiniMax M3", 524288, 131072, vision: true, family),
+            CreateModel("minimax-m3", "MiniMax M3", 1048576, 131072, vision: true, family),
+            CreateModel("kimi-k2.7-code", "Kimi K2.7 Code", 262144, 32768, vision: true, family),
             CreateModel("glm-5.2", "GLM 5.2", 1048576, 131072, vision: false, family),
             CreateModel("deepseek-v4-flash", "DeepSeek V4 Flash", 1048576, 393216, vision: false, family),
-            CreateModel("deepseek-v4-pro", "DeepSeek V4 Pro", 1048576, 393216, vision: false, family),
-            CreateModel("kimi-k2.6", "Kimi K2.6", 262144, 32768, vision: true, family),
-            CreateModel("kimi-k2.7-code", "Kimi K2.7 Code", 262144, 32768, vision: true, family)
+            CreateModel("deepseek-v4-pro", "DeepSeek V4 Pro", 1048576, 393216, vision: false, family)
         };
     }
 

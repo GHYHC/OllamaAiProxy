@@ -20,7 +20,7 @@ OllamaAiProxy 是一个轻量级 ASP.NET Core 代理服务，用来把国内外�
   - `GET /v1/models`：返回可用模型列表（OpenAI 兼容格式）。
   - `GET /v1/models/{provider}/{model}`：查询单个模型详情。
   - `POST /v1/chat/completions`：转发非流式和流式聊天请求。
-  - `POST /v1/responses`：Responses API 兼容接口，直接转发到上游 `/v1/responses`，仅把 `model` 从 `provider/model` 重写为上游模型名，支持非流式和流式（按字节透传，保留上游 SSE 帧）。
+  - `POST /v1/responses`：Responses API 兼容接口，转发到上游 `/v1/responses`，仅把 `model` 从 `provider/model` 重写为上游模型名；勾选了「图片中继」的模型会先把 `input_image` 块经视觉中继转成文字再转发。支持非流式和流式（按字节透传，保留上游 SSE 帧）。
   - `GET /v1/responses/{id}`：查询缓存的非流式 Responses 响应（内存存储，重启后清空，最多保留 200 条；流式响应不做缓存）。
 - 内置 provider：
   - `DeepSeek`：默认读取 `DEEPSEEK_API_KEY`，Base URL 为 `https://api.deepseek.com`。
@@ -29,7 +29,8 @@ OllamaAiProxy 是一个轻量级 ASP.NET Core 代理服务，用来把国内外�
 - 支持多个同类型 provider，通过不同 `Name` 区分。
 - **每个 provider 可配置多个 ApiKey，429 限流时自动轮换到下一个可用 Key。**
 - 自带浏览器测试页：启动后访问 `http://localhost:11434/`。
-- **`/v1/responses` 说明**：请求与响应均原样透传上游（仅重写模型名），能力完全取决于上游是否支持 Responses 接口（如内置工具、`previous_response_id` 多轮续接等）；上游错误原样返回。模型名必须使用 `provider/model` 格式。
+- **`/v1/responses` 说明**：响应原样透传上游（仅重写模型名），能力完全取决于上游是否支持 Responses 接口（如内置工具、`previous_response_id` 多轮续接等）；上游错误原样返回。请求侧支持图片视觉中继（勾选了「图片中继」的模型会把 `input_image` 转成文字再转发）。模型名必须使用 `provider/model` 格式。
+- **图片视觉中继**：可按模型显式启用——勾选后纯文本模型收到图片会先用视觉模型转成文字（OCR + 画面描述）再转发，详见下文「图片视觉中继」一节。
 - 可选请求日志：通过 `RequestLogging` 配置启用。
 
 ## 运行要求
@@ -124,20 +125,17 @@ aliyun/qwen-max
 
 火山方舟 Coding Plan 提供兼容 OpenAI 的聊天补全接口，Base URL 必须使用 `https://ark.cn-beijing.volces.com/api/coding/v3`（请勿使用 `/api/v3`，否则不消耗套餐额度并会产生额外费用）。模型列表固定为 Coding Plan 支持的模型（来源：方舟 Coding Plan 文档），不再从 `/models` 接口拉取，避免误用非套餐模型。聊天补全走 `POST /chat/completions`，`model` 字段直接使用下列 Model Name。
 
-内置模型（共 11 个，均支持函数调用与深度思考；模型名前缀为 `VolcengineCodingPlan/`，例如 `VolcengineCodingPlan/doubao-seed-2.0-code`）：
+内置模型（共 8 个，均支持函数调用与深度思考；模型名前缀为 `VolcengineCodingPlan/`，例如 `VolcengineCodingPlan/doubao-seed-2.1-turbo`）：
 
 ```text
-doubao-seed-2.0-code      上下文 256K / 输出 128K / 视觉
-doubao-seed-2.0-pro       上下文 256K / 输出 128K / 视觉
+ark-code-latest           控制台路由（上下文/输出随所选模型而定）
+doubao-seed-2.1-turbo     上下文 256K / 输出 64K / 视觉
 doubao-seed-2.0-lite      上下文 256K / 输出 128K / 视觉
-doubao-seed-code          上下文 256K / 输出 32K / 视觉
-minimax-m2.7              上下文 200K / 输出 128K
-minimax-m3                上下文 512K / 输出 128K / 视觉
+minimax-m3                上下文 1M / 输出 128K / 视觉
+kimi-k2.7-code            上下文 256K / 输出 32K / 视觉
 glm-5.2                   上下文 1M / 输出 128K
 deepseek-v4-flash         上下文 1M / 输出 384K
 deepseek-v4-pro           上下文 1M / 输出 384K
-kimi-k2.6                 上下文 256K / 输出 32K / 视觉
-kimi-k2.7-code            上下文 256K / 输出 32K / 视觉
 ```
 
 配置示例：
@@ -157,6 +155,55 @@ kimi-k2.7-code            上下文 256K / 输出 32K / 视觉
 ```
 
 客户端请求 `/v1/chat/completions` 时使用 `VolcengineCodingPlan/<Model Name>` 格式，代理会去掉前缀后转发给上游。
+
+## 图片视觉中继（让纯文本模型“看图”）
+
+`deepseek-v4-pro`、`deepseek-v4-flash`、`glm-5.2` 等纯文本模型无法处理图片，直接收到 `image_url` 会报错并中断会话。图片视觉中继会先用一个支持视觉的模型把图片描述成文字（OCR 文字 + 画面描述），再把消息里的 `image_url` 块替换成文本块转发给纯文本模型，让它也能“看图”回答。
+
+**中继按模型显式启用（opt-in）**：只有在模型详情里勾选了「图片中继」的模型才会走中继。视觉模型（capabilities 含 `vision`）收到图片直接原生放行；纯文本模型未勾选时不拦截，图片请求原样转发给上游（上游可能因 `image_url` 自行报错）。默认情况下纯文本模型不会自动中继。
+
+工作流程：
+
+```text
+客户端发送图片 -> 代理检测到 image_url
+  -> 该模型勾选了「图片中继」？是 -> 调用视觉模型识图 -> 用文字描述替换 image_url -> 转发
+                                 否 -> 原样转发给上游（视觉模型原生处理；纯文本模型上游可能报错）
+```
+
+作用于 `POST /v1/chat/completions` 与 `POST /v1/responses`：前者替换 `messages` 里的 `image_url` 块，后者替换 `input` 里的 `input_image` 块，均换成文字描述。中继用的视觉模型通过本代理已有的 provider 体系调用，复用 ApiKey 轮换与 429 重试。
+
+### 按模型启用
+
+中继需要在**每个模型**上单独开启，方式有两种：
+
+- 测试页：选中模型 ->「编辑」-> 勾选「图片中继」->「保存」。勾选时会自动把 `vision` 能力一并勾上（仅作标记，不参与中继判断）。
+- 直接调用覆盖接口：`PUT /api/model-overrides/{provider}/{model}`，请求体里设 `"imageRelay": true`。
+
+覆盖值持久化到 `model-overrides.json`，重启后保留。全局还需在 `appsettings.json` 配置 `ImageVisionRelay:VisionModel`（见下），否则勾选了中继也会因未配置视觉模型而报错。
+
+### 配置
+
+在 `appsettings.json` 中配置 `ImageVisionRelay`：
+
+```json
+{
+  "ImageVisionRelay": {
+    "Enabled": true,
+    "VisionModel": "VolcengineCodingPlan/doubao-seed-2.0-lite",
+    "Prompt": ""
+  }
+}
+```
+
+| 字段 | 说明 | 默认值 |
+| --- | --- | --- |
+| `Enabled` | 是否启用中继。`true` 时若未配置 `VisionModel` 仍不生效（回退到拒绝图片）。 | `true` |
+| `VisionModel` | 用于识图的视觉模型，使用 `provider/model` 格式，例如 `VolcengineCodingPlan/doubao-seed-2.0-lite`、`VolcengineCodingPlan/doubao-seed-2.1-turbo`、`OpenAI/gpt-4o`。留空则中继关闭。 | 空 |
+| `Prompt` | 发给视觉模型的提示词。留空使用内置默认（提取所有可见文字再描述画面，输出 `[IMAGE ANALYSIS]` 结构化结果）。 | 空（内置默认） |
+
+> `VisionModel` 必须是一个 capabilities 含 `vision` 的模型。火山方舟 Coding Plan 下的 `doubao-seed-2.1-turbo`、`doubao-seed-2.0-lite`、`kimi-k2.7-code` 等均支持视觉；`glm-5.2`、`deepseek-v4-*` 是纯文本模型，不能用作 `VisionModel`。
+>
+> 识图调用始终走非流式，即使最终请求是流式。若识图失败（视觉模型不可用、Key 无效等），对应图片会被替换为 `(recognition failed)` 占位文本，请求仍会转发，避免会话中断。
 
 ## Visual Studio 2026 + GitHub Copilot 接入国内大模型
 
@@ -200,7 +247,7 @@ kimi-k2.7-code            上下文 256K / 输出 32K / 视觉
 
 - 如果 Visual Studio 2026 的 Copilot 只扫描 Ollama 默认地址，请确保本服务监听 `11434` 端口。
 - 如果本机已经运行 Ollama，可以先关闭 Ollama，或通过 `PORT` 修改本项目端口后，在 Copilot 中填写对应地址。
-- DeepSeek provider 当前不支持图片输入；如果 Copilot 发送多模态图片消息，代理会返回不支持图片的错误。
+- 纯文本模型（如 DeepSeek 系列、`glm-5.2`）默认不支持图片输入；需要在模型详情里勾选「图片中继」并配置 `ImageVisionRelay:VisionModel` 后，代理才会先把图片转成文字再转发，否则图片请求会原样转发给上游（上游可能因 `image_url` 报错）。
 - Copilot 使用工具调用、流式响应或模型详情探测时，本项目会尽量透传 OpenAI 兼容请求，但最终能力仍取决于上游模型厂商。
 
 ## 常用环境变量

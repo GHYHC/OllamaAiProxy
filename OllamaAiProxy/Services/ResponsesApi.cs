@@ -13,7 +13,7 @@ namespace OllamaAiProxy.Services;
 /// </summary>
 public static class ResponsesApi
 {
-    public static async Task HandleCreateAsync(HttpContext context, IAiProviderRegistry registry, ResponsesStore store)
+    public static async Task HandleCreateAsync(HttpContext context, IAiProviderRegistry registry, ModelOverridesStore overridesStore, ImageVisionRelay imageVisionRelay, ResponsesStore store)
     {
         var cancellationToken = context.RequestAborted;
 
@@ -51,8 +51,41 @@ public static class ResponsesApi
                 return;
             }
 
+            // 图片中继按模型显式 opt-in（与 /v1/chat/completions 一致）：只有勾选了 imageRelay
+            // 的模型才走中继；未勾选时不拦截，原样转发给上游（上游可能因 input_image 自行报错）。
+            JsonDocument? translatedRequest = null;
+            if (ResponsesRequestContainsImages(root))
+            {
+                var overrides = overridesStore.Get(requestedModel);
+                if (overrides?.ImageRelay == true)
+                {
+                    if (!imageVisionRelay.Enabled)
+                    {
+                        await WriteErrorAsync(
+                            context,
+                            "Image vision relay is enabled for this model but not configured. " +
+                            "Set ImageVisionRelay:VisionModel with a vision-capable model.",
+                            StatusCodes.Status400BadRequest, cancellationToken);
+                        return;
+                    }
+
+                    translatedRequest = await imageVisionRelay.TranslateResponsesImagesAsync(request, cancellationToken);
+                    if (translatedRequest is null)
+                    {
+                        await WriteErrorAsync(
+                            context,
+                            $"{requestedModel} image vision relay failed. " +
+                            "Configure ImageVisionRelay:VisionModel with a vision-capable model.",
+                            StatusCodes.Status400BadRequest, cancellationToken);
+                        return;
+                    }
+                }
+            }
+
             var isStream = TryGetBoolean(root, "stream");
-            using var upstreamRequest = RewriteModel(request, resolved.Value.UpstreamModel);
+            var effectiveRequest = translatedRequest ?? request;
+            using var upstreamRequest = RewriteModel(effectiveRequest, resolved.Value.UpstreamModel);
+            translatedRequest?.Dispose();
             await using var upstream = isStream
                 ? await resolved.Value.Provider.StreamResponseAsync(upstreamRequest, cancellationToken)
                 : await resolved.Value.Provider.CreateResponseAsync(upstreamRequest, cancellationToken);
@@ -152,6 +185,27 @@ public static class ResponsesApi
         element.ValueKind == JsonValueKind.Object &&
         element.TryGetProperty(propertyName, out var prop) &&
         prop.ValueKind == JsonValueKind.True;
+
+    // /v1/responses 的 input 数组里是否含 input_image 块（OpenAI Responses 多模态格式）。
+    private static bool ResponsesRequestContainsImages(JsonElement root)
+    {
+        if (!root.TryGetProperty("input", out var input) || input.ValueKind != JsonValueKind.Array)
+            return false;
+
+        foreach (var item in input.EnumerateArray())
+        {
+            if (!item.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
+                continue;
+
+            foreach (var part in content.EnumerateArray())
+            {
+                if (TryGetString(part, "type") == "input_image")
+                    return true;
+            }
+        }
+
+        return false;
+    }
 
     private static async Task WriteErrorAsync(
         HttpContext context,

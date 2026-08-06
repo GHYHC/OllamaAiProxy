@@ -40,6 +40,20 @@ builder.Services.AddSingleton(sp =>
     return new ModelOverridesStore(overridesPath);
 });
 
+builder.Services.AddSingleton<ImageVisionRelay>(sp =>
+{
+    var configuration = sp.GetRequiredService<IConfiguration>();
+    var registry = sp.GetRequiredService<IAiProviderRegistry>();
+    var section = configuration.GetSection(ImageVisionRelayOptions.SectionName);
+    var options = new ImageVisionRelayOptions
+    {
+        Enabled = section.GetValue(nameof(ImageVisionRelayOptions.Enabled), true),
+        VisionModel = section.GetValue(nameof(ImageVisionRelayOptions.VisionModel), "") ?? "",
+        Prompt = section.GetValue(nameof(ImageVisionRelayOptions.Prompt), "") ?? ""
+    };
+    return new ImageVisionRelay(registry, options);
+});
+
 var app = builder.Build();
 // 加载用户自定义的模型详情覆盖数据。
 await app.Services.GetRequiredService<ModelOverridesStore>().LoadAsync();
@@ -140,7 +154,7 @@ app.MapGet("/v1/models/{*model}", async (string model, IAiProviderRegistry regis
 });
 
 // OpenAI 兼容聊天接口：provider 负责厂商转发，这一层只做通用校验和响应透传。
-app.MapPost("/v1/chat/completions", async (HttpContext context, IAiProviderRegistry registry) =>
+app.MapPost("/v1/chat/completions", async (HttpContext context, IAiProviderRegistry registry, ImageVisionRelay imageVisionRelay, ModelOverridesStore overridesStore) =>
 {
     JsonDocument request;
     try
@@ -167,12 +181,36 @@ app.MapPost("/v1/chat/completions", async (HttpContext context, IAiProviderRegis
             return Error($"model '{requestedModel}' not found", StatusCodes.Status404NotFound);
 
         var provider = resolved.Value.Provider;
-        // 图片输入是否允许由 provider 能力决定：OpenAI 可放行，DeepSeek 仍拒绝。
-        if (RequestContainsImages(root) && !provider.SupportsImages)
-            return Error($"{provider.Name} provider does not support image inputs.", StatusCodes.Status400BadRequest);
+        // 图片中继按模型显式 opt-in：只有在该模型覆盖值里勾选了 imageRelay 才走中继
+        // （勾选时 vision 仅作标记，不参与判断）；未勾选时不拦截，原样转发给上游
+        // （视觉模型原生支持图片；纯文本模型上游可能因 image_url 自行报错）。
+        JsonDocument? translatedRequest = null;
+        if (RequestContainsImages(root))
+        {
+            var overrides = overridesStore.Get(requestedModel);
+            if (overrides?.ImageRelay == true)
+            {
+                if (!imageVisionRelay.Enabled)
+                    return Error(
+                        "Image vision relay is enabled for this model but not configured. " +
+                        "Set ImageVisionRelay:VisionModel with a vision-capable model.",
+                        StatusCodes.Status400BadRequest);
 
-        var isStream = TryGetBoolean(root, "stream");
-        using var upstreamRequest = RewriteModel(request, resolved.Value.UpstreamModel);
+                translatedRequest = await imageVisionRelay.TranslateImagesAsync(request, context.RequestAborted);
+                if (translatedRequest is null)
+                {
+                    return Error(
+                        $"{requestedModel} image vision relay failed. " +
+                        "Configure ImageVisionRelay:VisionModel with a vision-capable model.",
+                        StatusCodes.Status400BadRequest);
+                }
+            }
+        }
+
+        var effectiveRequest = translatedRequest ?? request;
+        var isStream = TryGetBoolean(effectiveRequest.RootElement, "stream");
+        using var upstreamRequest = RewriteModel(effectiveRequest, resolved.Value.UpstreamModel);
+        translatedRequest?.Dispose();
         await using var response = isStream
             ? await provider.StreamChatCompletionAsync(upstreamRequest, context.RequestAborted)
             : await provider.CreateChatCompletionAsync(upstreamRequest, context.RequestAborted);
@@ -194,9 +232,9 @@ app.MapPost("/v1/chat/completions", async (HttpContext context, IAiProviderRegis
 });
 
 // Responses API 兼容接口：直接转发到上游 /v1/responses，仅把 model 重写为上游模型名，
-// 不翻译请求和响应；流式按字节透传。
-app.MapPost("/v1/responses", (HttpContext context, IAiProviderRegistry registry, ResponsesStore store) =>
-    ResponsesApi.HandleCreateAsync(context, registry, store));
+// 请求按需经图片中继翻译（勾选 imageRelay 的模型），响应原样透传；流式按字节透传。
+app.MapPost("/v1/responses", (HttpContext context, IAiProviderRegistry registry, ModelOverridesStore overridesStore, ImageVisionRelay imageVisionRelay, ResponsesStore store) =>
+    ResponsesApi.HandleCreateAsync(context, registry, overridesStore, imageVisionRelay, store));
 
 // Responses 查询接口：读取内存中缓存的非流式响应（最多保留 200 条）。
 app.MapGet("/v1/responses/{responseId}", (HttpContext context, ResponsesStore store) =>
@@ -205,6 +243,8 @@ Console.WriteLine("Ollama AI Proxy API");
 var startupRegistry = app.Services.GetRequiredService<IAiProviderRegistry>();
 Console.WriteLine($"Providers: {string.Join(", ", startupRegistry.Providers.Select(x => $"{x.Name}/{x.Family}"))}");
 Console.WriteLine($"URL:      {testPageUrl}");
+var startupRelay = app.Services.GetRequiredService<ImageVisionRelay>();
+Console.WriteLine($"Vision relay: {(startupRelay.Enabled ? $"on -> {startupRelay.VisionModel}" : "off")}");
 
 if (ShouldOpenTestPage(app.Configuration, app.Environment))
 {
@@ -387,6 +427,7 @@ static OllamaShowResponse ToOllamaShow(IAiProvider provider, AiModel model, Mode
     var activeCount = overrides?.ActiveParameterCount ?? model.ModelInfo.ActiveParameterCount;
     var textOnly = overrides?.TextOnly ?? model.ModelInfo.TextOnly;
     var deprecated = overrides?.Deprecated ?? model.ModelInfo.Deprecated;
+    var imageRelay = overrides?.ImageRelay ?? false;
     var availability = overrides?.Availability ?? model.ModelInfo.Availability;
     var displayName = overrides?.DisplayName ?? model.DisplayName;
     var capabilities = overrides?.Capabilities ?? model.Capabilities;
@@ -408,7 +449,8 @@ static OllamaShowResponse ToOllamaShow(IAiProvider provider, AiModel model, Mode
             [$"{arch}.max_output_tokens"] = JsonInt(maxOut),
             [$"{arch}.text_only"] = JsonBool(textOnly),
             [$"{arch}.deprecated"] = JsonBool(deprecated),
-            [$"{arch}.availability"] = JsonString(availability)
+            [$"{arch}.availability"] = JsonString(availability),
+            [$"{arch}.image_relay"] = JsonBool(imageRelay)
         },
         capabilities,
         model.ModifiedAt);

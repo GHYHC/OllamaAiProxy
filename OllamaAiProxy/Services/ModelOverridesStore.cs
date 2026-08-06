@@ -21,6 +21,7 @@ public sealed record ModelOverride
     public bool? TextOnly { get; init; }
     public bool? Deprecated { get; init; }
     public List<string>? Capabilities { get; init; }
+    public bool? ImageRelay { get; init; }
 }
 
 /// <summary>
