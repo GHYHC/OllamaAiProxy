@@ -15,9 +15,4 @@ public sealed class ImageVisionRelayOptions
     /// 例如 VolcengineCodingPlan/doubao-seed-2.0-lite。为空时中继不生效。
     /// </summary>
     public string VisionModel { get; set; } = "";
-
-    /// <summary>
-    /// 发给视觉模型的提示词。留空使用默认（提取所有可见文字再描述画面，输出结构化结果）。
-    /// </summary>
-    public string Prompt { get; set; } = "";
 }

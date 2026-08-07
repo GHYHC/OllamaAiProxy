@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using OllamaAiProxy.Contracts;
@@ -22,13 +24,41 @@ public sealed class ImageVisionRelay
     private const string FailedDescription =
         "[IMAGE ANALYSIS]\nText content: (recognition failed)\nVisual description: (recognition failed)";
 
+    /// <summary>聚焦提示最长保留字符数，避免把整段用户消息灌进视觉提示词。</summary>
+    private const int MaxFocusHintLength = 500;
+
+    /// <summary>追加在基础提示词后的意图说明，提醒模型仍要提取全部文字并保持输出格式。</summary>
+    private const string FocusHintInstruction =
+        "\n\nViewer intent for this image (focus the description on what matters for this intent, " +
+        "but still extract ALL visible text and keep the output format above):\n";
+
+    /// <summary>单张图片识图超时；超时后取消并按可重试处理。</summary>
+    private static readonly TimeSpan VisionTimeout = TimeSpan.FromSeconds(60);
+
+    /// <summary>识图失败后的最大重试次数（不含首次），仅对 5xx 和超时重试。</summary>
+    private const int VisionMaxRetries = 2;
+
+    /// <summary>重试之间的退避间隔，随尝试递增。</summary>
+    private static readonly TimeSpan[] RetryDelays =
+        [TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(1000)];
+
+    /// <summary>远程图片拉取超时。</summary>
+    private static readonly TimeSpan FetchTimeout = TimeSpan.FromSeconds(15);
+
+    /// <summary>远程图片拉取的最大字节数，超过则放弃转 data URL。</summary>
+    private const int MaxFetchBytes = 10 * 1024 * 1024;
+
     private readonly IAiProviderRegistry _registry;
     private readonly ImageVisionRelayOptions _options;
+    private readonly HttpClient _httpClient;
+    private readonly DescriptionCache _cache = new();
 
-    public ImageVisionRelay(IAiProviderRegistry registry, ImageVisionRelayOptions options)
+    public ImageVisionRelay(IAiProviderRegistry registry, ImageVisionRelayOptions options, IHttpClientFactory httpClientFactory)
     {
         _registry = registry;
         _options = options;
+        _httpClient = httpClientFactory.CreateClient();
+        _httpClient.Timeout = Timeout.InfiniteTimeSpan;
     }
 
     /// <summary>中继是否可用：已启用且配置了视觉模型。</summary>
@@ -37,7 +67,31 @@ public sealed class ImageVisionRelay
     /// <summary>当前配置的视觉模型（provider/model 格式），用于启动日志。</summary>
     public string VisionModel => _options.VisionModel;
 
-    private string Prompt => string.IsNullOrWhiteSpace(_options.Prompt) ? DefaultPrompt : _options.Prompt;
+    /// <summary>
+    /// 实际发给视觉模型的提示词：有当轮意图时在基础提示词后追加聚焦说明，否则原样返回。
+    /// </summary>
+    private string EffectivePrompt(string focusHint)
+    {
+        if (string.IsNullOrWhiteSpace(focusHint))
+            return DefaultPrompt;
+
+        var hint = focusHint.Trim();
+        if (hint.Length > MaxFocusHintLength)
+            hint = hint[..MaxFocusHintLength] + "...";
+
+        return DefaultPrompt + FocusHintInstruction + hint;
+    }
+
+    // 中继日志统一带前缀写到控制台，和 RequestLoggingMiddleware 保持一致。
+    private static void Log(string message) => Console.WriteLine($"[ImageVisionRelay] {message}");
+
+    // 日志里图片地址的简短标记：data URL 只显示前缀，长 URL 截断，避免刷屏。
+    private static string ImageLabel(string imageUrl)
+    {
+        if (imageUrl.StartsWith("data:", StringComparison.Ordinal))
+            return imageUrl.Length <= 32 ? imageUrl : "data:" + imageUrl.Substring(5, 27) + "...";
+        return imageUrl.Length <= 96 ? imageUrl : imageUrl.Substring(0, 96) + "...";
+    }
 
     /// <summary>
     /// 把请求里的 image_url 块替换成视觉模型生成的文字描述。没有图片或中继不可用时返回 null。
@@ -51,13 +105,14 @@ public sealed class ImageVisionRelay
         if (!root.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array)
             return null;
 
-        var imageUrls = CollectImageUrls(messages);
-        if (imageUrls.Count == 0)
+        var images = CollectImagesWithFocus(messages);
+        if (images.Count == 0)
             return null;
 
-        var descriptions = new string[imageUrls.Count];
-        for (var i = 0; i < imageUrls.Count; i++)
-            descriptions[i] = await AnalyzeImageAsync(imageUrls[i], cancellationToken);
+        var tasks = new Task<string>[images.Count];
+        for (var i = 0; i < images.Count; i++)
+            tasks[i] = AnalyzeImageAsync(images[i].Url, images[i].FocusHint, cancellationToken);
+        var descriptions = await Task.WhenAll(tasks);
 
         return RebuildRequest(root, messages, descriptions);
     }
@@ -75,33 +130,58 @@ public sealed class ImageVisionRelay
         if (!root.TryGetProperty("input", out var input) || input.ValueKind != JsonValueKind.Array)
             return null;
 
-        var imageUrls = CollectResponsesImageUrls(input);
-        if (imageUrls.Count == 0)
+        var images = CollectResponsesImagesWithFocus(input);
+        if (images.Count == 0)
             return null;
 
-        var descriptions = new string[imageUrls.Count];
-        for (var i = 0; i < imageUrls.Count; i++)
-            descriptions[i] = await AnalyzeImageAsync(imageUrls[i], cancellationToken);
+        var tasks = new Task<string>[images.Count];
+        for (var i = 0; i < images.Count; i++)
+            tasks[i] = AnalyzeImageAsync(images[i].Url, images[i].FocusHint, cancellationToken);
+        var descriptions = await Task.WhenAll(tasks);
 
         return RebuildResponsesRequest(root, input, descriptions);
     }
 
-    // 按文档顺序收集 input 数组里所有 input_image 块的图片地址，用于逐个识图。
-    private static List<string> CollectResponsesImageUrls(JsonElement input)
+    // 按文档顺序收集 input 数组里所有 input_image 块及其聚焦提示：优先取图片所在用户条目的文字，
+    // 否则回退到最近一条用户条目文字（system/assistant 不参与，避免污染意图）。
+    private static List<(string Url, string FocusHint)> CollectResponsesImagesWithFocus(JsonElement input)
     {
-        var urls = new List<string>();
+        var result = new List<(string, string)>();
+        var lastUserText = "";
+
         foreach (var item in input.EnumerateArray())
         {
             if (!item.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
                 continue;
 
+            var isUser = TryGetString(item, "role") == "user";
+            var itemText = ConcatResponsesTextParts(content);
+            if (isUser && !string.IsNullOrWhiteSpace(itemText))
+                lastUserText = itemText;
+
             foreach (var part in content.EnumerateArray())
             {
                 if (TryGetString(part, "type") == "input_image")
-                    urls.Add(ExtractImageUrl(part));
+                {
+                    var hint = (isUser && !string.IsNullOrWhiteSpace(itemText)) ? itemText : lastUserText;
+                    result.Add((ExtractImageUrl(part), hint));
+                }
             }
         }
-        return urls;
+        return result;
+    }
+
+    // 拼接 responses 内容数组里的 input_text 文字，用作聚焦提示来源。
+    private static string ConcatResponsesTextParts(JsonElement content)
+    {
+        var sb = new StringBuilder();
+        foreach (var part in content.EnumerateArray())
+        {
+            if (TryGetString(part, "type") == "input_text" &&
+                part.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String)
+                sb.Append(text.GetString());
+        }
+        return sb.ToString();
     }
 
     // 重建请求：复制所有字段，仅把 input 里的 input_image 块替换成对应文字描述。
@@ -166,23 +246,129 @@ public sealed class ImageVisionRelay
         writer.WriteEndArray();
     }
 
-    private async Task<string> AnalyzeImageAsync(string imageUrl, CancellationToken cancellationToken)
+    private async Task<string> AnalyzeImageAsync(string imageUrl, string focusHint, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(imageUrl))
             return FailedDescription;
 
-        var resolved = await _registry.ResolveModelAsync(_options.VisionModel, cancellationToken);
-        if (resolved is null)
+        var key = CacheKey(imageUrl, focusHint);
+        if (_cache.TryGet(key, out var cached))
+        {
+            Log($"cache hit {ImageLabel(imageUrl)}");
+            return cached;
+        }
+
+        (IAiProvider Provider, AiModel Model, string UpstreamModel)? resolved;
+        try
+        {
+            resolved = await _registry.ResolveModelAsync(_options.VisionModel, cancellationToken);
+        }
+        catch (Exception) when (cancellationToken.IsCancellationRequested)
+        {
+            throw; // 客户端已取消：传播，不记 error
+        }
+        catch (Exception ex)
+        {
+            Log($"vision model resolve error: {ex.GetType().Name}");
             return FailedDescription;
+        }
+        if (resolved is null)
+        {
+            Log($"vision model not resolved: {_options.VisionModel}");
+            return FailedDescription;
+        }
 
         var (provider, _, upstreamModel) = resolved.Value;
-        using var visionRequest = BuildVisionRequest(upstreamModel, imageUrl, Prompt);
-        await using var response = await provider.CreateChatCompletionAsync(visionRequest, cancellationToken);
+        var effectiveUrl = await ResolveImageUrlAsync(imageUrl, cancellationToken);
 
-        if (response.StatusCode is < 200 or >= 300 || string.IsNullOrEmpty(response.Body))
-            return FailedDescription;
+        var description = FailedDescription;
+        for (var attempt = 0; attempt <= VisionMaxRetries; attempt++)
+        {
+            var start = Stopwatch.GetTimestamp();
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                cts.CancelAfter(VisionTimeout);
+                using var visionRequest = BuildVisionRequest(upstreamModel, effectiveUrl, EffectivePrompt(focusHint));
+                await using var response = await provider.CreateChatCompletionAsync(visionRequest, cts.Token);
 
-        return ExtractContent(response.Body) ?? FailedDescription;
+                var ms = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+                if (response.StatusCode is >= 200 and < 300 && !string.IsNullOrEmpty(response.Body))
+                {
+                    description = ExtractContent(response.Body) ?? FailedDescription;
+                    if (description != FailedDescription)
+                        Log($"vision ok {ImageLabel(imageUrl)} attempt={attempt + 1} {ms:F0}ms");
+                    break;
+                }
+
+                Log($"vision fail {ImageLabel(imageUrl)} attempt={attempt + 1} status={response.StatusCode} {ms:F0}ms");
+                if (response.StatusCode is < 500 or >= 600)
+                    break;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                var ms = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+                Log($"vision timeout {ImageLabel(imageUrl)} attempt={attempt + 1} {ms:F0}ms");
+            }
+            catch (Exception) when (cancellationToken.IsCancellationRequested)
+            {
+                throw; // 客户端已取消请求：立即传播，不重试也不记 error
+            }
+            catch (Exception ex)
+            {
+                Log($"vision error {ImageLabel(imageUrl)} attempt={attempt + 1}: {ex.GetType().Name}");
+            }
+
+            if (attempt < VisionMaxRetries)
+                await Task.Delay(RetryDelays[attempt], cancellationToken);
+        }
+
+        if (description != FailedDescription)
+            _cache.Set(key, description);
+        else
+            Log($"vision gave up {ImageLabel(imageUrl)}");
+        return description;
+    }
+
+    // 远程图片主动拉取并转 data URL，保证视觉模型能访问内网/localhost 等上游不可达的地址；
+    // data URL 直接放行；拉取失败或过大则回退原地址交给上游处理。
+    private async Task<string> ResolveImageUrlAsync(string imageUrl, CancellationToken cancellationToken)
+    {
+        if (!imageUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+            return imageUrl;
+
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(FetchTimeout);
+            using var response = await _httpClient.GetAsync(imageUrl, HttpCompletionOption.ResponseContentRead, cts.Token);
+            if (!response.IsSuccessStatusCode)
+            {
+                Log($"fetch fail {ImageLabel(imageUrl)} status={(int)response.StatusCode}");
+                return imageUrl;
+            }
+
+            var bytes = await response.Content.ReadAsByteArrayAsync(cts.Token);
+            if (bytes.Length > MaxFetchBytes)
+            {
+                Log($"fetch too large {ImageLabel(imageUrl)} {bytes.Length}B");
+                return imageUrl;
+            }
+
+            var mime = response.Content.Headers.ContentType?.MediaType ?? "image/png";
+            Log($"fetched {ImageLabel(imageUrl)} {bytes.Length}B -> data url");
+            return "data:" + mime + ";base64," + Convert.ToBase64String(bytes);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            Log($"fetch timeout {ImageLabel(imageUrl)}");
+            return imageUrl;
+        }
+        catch (Exception ex)
+        {
+            Log($"fetch error {ImageLabel(imageUrl)}: {ex.GetType().Name}");
+            return imageUrl;
+        }
     }
 
     private static JsonDocument BuildVisionRequest(string model, string imageUrl, string prompt)
@@ -257,22 +443,47 @@ public sealed class ImageVisionRelay
         return sb.ToString();
     }
 
-    // 按文档顺序收集所有 image_url 块的图片地址，用于逐个识图。
-    private static List<string> CollectImageUrls(JsonElement messages)
+    // 按文档顺序收集所有 image_url 块及其聚焦提示：优先取图片所在用户消息的文字，
+    // 否则回退到最近一条用户消息文字（system/assistant 不参与，避免污染意图）。
+    private static List<(string Url, string FocusHint)> CollectImagesWithFocus(JsonElement messages)
     {
-        var urls = new List<string>();
+        var result = new List<(string, string)>();
+        var lastUserText = "";
+
         foreach (var message in messages.EnumerateArray())
         {
+            var isUser = TryGetString(message, "role") == "user";
+            var messageText = ExtractMessageText(message);
+            if (isUser && !string.IsNullOrWhiteSpace(messageText))
+                lastUserText = messageText;
+
             if (!message.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
                 continue;
 
             foreach (var part in content.EnumerateArray())
             {
                 if (TryGetString(part, "type") == "image_url")
-                    urls.Add(ExtractImageUrl(part));
+                {
+                    var hint = (isUser && !string.IsNullOrWhiteSpace(messageText)) ? messageText : lastUserText;
+                    result.Add((ExtractImageUrl(part), hint));
+                }
             }
         }
-        return urls;
+        return result;
+    }
+
+    // 提取单条消息的文字内容：字符串 content 直接返回，数组 content 拼接所有 text 块。
+    private static string ExtractMessageText(JsonElement message)
+    {
+        if (!message.TryGetProperty("content", out var content))
+            return "";
+
+        return content.ValueKind switch
+        {
+            JsonValueKind.String => content.GetString() ?? "",
+            JsonValueKind.Array => ConcatTextParts(content),
+            _ => ""
+        };
     }
 
     private static string ExtractImageUrl(JsonElement part)
@@ -359,4 +570,57 @@ public sealed class ImageVisionRelay
         prop.ValueKind == JsonValueKind.String
             ? prop.GetString()
             : null;
+
+    // 缓存键：图片地址 + 聚焦提示的 SHA256，避免把超长 data URL 当 key 占内存。
+    private static string CacheKey(string imageUrl, string focusHint)
+    {
+        var raw = imageUrl + "\u0001" + focusHint;
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(raw)));
+    }
+
+    /// <summary>识图结果内存缓存：带 TTL 与条数上限，多轮对话避免对同一图片重复识图。</summary>
+    private sealed class DescriptionCache
+    {
+        private static readonly TimeSpan Ttl = TimeSpan.FromMinutes(30);
+        private const int MaxEntries = 200;
+        private readonly Dictionary<string, (string Desc, DateTime Expires)> _items = new();
+        private readonly object _lock = new();
+
+        public bool TryGet(string key, out string value)
+        {
+            lock (_lock)
+            {
+                if (_items.TryGetValue(key, out var entry) && entry.Expires > DateTime.UtcNow)
+                {
+                    value = entry.Desc;
+                    return true;
+                }
+            }
+            value = "";
+            return false;
+        }
+
+        public void Set(string key, string value)
+        {
+            lock (_lock)
+            {
+                if (_items.Count >= MaxEntries && !_items.ContainsKey(key))
+                {
+                    string? oldestKey = null;
+                    var oldestExpires = DateTime.MaxValue;
+                    foreach (var kvp in _items)
+                    {
+                        if (kvp.Value.Expires < oldestExpires)
+                        {
+                            oldestExpires = kvp.Value.Expires;
+                            oldestKey = kvp.Key;
+                        }
+                    }
+                    if (oldestKey != null)
+                        _items.Remove(oldestKey);
+                }
+                _items[key] = (value, DateTime.UtcNow + Ttl);
+            }
+        }
+    }
 }

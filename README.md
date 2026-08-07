@@ -170,6 +170,8 @@ deepseek-v4-pro           上下文 1M / 输出 384K
                                  否 -> 原样转发给上游（视觉模型原生处理；纯文本模型上游可能报错）
 ```
 
+**任务感知描述（聚焦提示）**：识图前中继会先提取当轮意图作为聚焦提示--优先取图片所在消息里的文字，没有则取最近一条**用户**消息的文字（system/assistant 不参与，避免历史回答污染意图；截断到 500 字符），追加到视觉提示词末尾。这样画面描述会围绕当前问题展开，而不是泛泛 OCR；未取到任何用户文字时退化为默认提示词，行为不变。`/v1/chat/completions` 取消息文字，`/v1/responses` 取 `input_text` 文字。
+
 作用于 `POST /v1/chat/completions` 与 `POST /v1/responses`：前者替换 `messages` 里的 `image_url` 块，后者替换 `input` 里的 `input_image` 块，均换成文字描述。中继用的视觉模型通过本代理已有的 provider 体系调用，复用 ApiKey 轮换与 429 重试。
 
 ### 按模型启用
@@ -189,8 +191,7 @@ deepseek-v4-pro           上下文 1M / 输出 384K
 {
   "ImageVisionRelay": {
     "Enabled": true,
-    "VisionModel": "VolcengineCodingPlan/doubao-seed-2.0-lite",
-    "Prompt": ""
+    "VisionModel": "VolcengineCodingPlan/doubao-seed-2.0-lite"
   }
 }
 ```
@@ -199,11 +200,10 @@ deepseek-v4-pro           上下文 1M / 输出 384K
 | --- | --- | --- |
 | `Enabled` | 是否启用中继。`true` 时若未配置 `VisionModel` 仍不生效（回退到拒绝图片）。 | `true` |
 | `VisionModel` | 用于识图的视觉模型，使用 `provider/model` 格式，例如 `VolcengineCodingPlan/doubao-seed-2.0-lite`、`VolcengineCodingPlan/doubao-seed-2.1-turbo`、`OpenAI/gpt-4o`。留空则中继关闭。 | 空 |
-| `Prompt` | 发给视觉模型的提示词。留空使用内置默认（提取所有可见文字再描述画面，输出 `[IMAGE ANALYSIS]` 结构化结果）。 | 空（内置默认） |
 
 > `VisionModel` 必须是一个 capabilities 含 `vision` 的模型。火山方舟 Coding Plan 下的 `doubao-seed-2.1-turbo`、`doubao-seed-2.0-lite`、`kimi-k2.7-code` 等均支持视觉；`glm-5.2`、`deepseek-v4-*` 是纯文本模型，不能用作 `VisionModel`。
 >
-> 识图调用始终走非流式，即使最终请求是流式。若识图失败（视觉模型不可用、Key 无效等），对应图片会被替换为 `(recognition failed)` 占位文本，请求仍会转发，避免会话中断。
+> 识图调用始终走非流式，即使最终请求是流式。若识图失败（视觉模型不可用、Key 无效等），对应图片会被替换为 `(recognition failed)` 占位文本，请求仍会转发，避免会话中断。识图结果在内存中缓存 30 分钟（最多 200 条），同一图片在多轮对话里不会重复识图；缓存键包含聚焦提示，不同意图会分别缓存，失败结果不缓存以便下次重试。单张图片识图有 60 秒超时，对 5xx 和超时会自动重试（最多 2 次、间隔递增）；4xx 等不可重试错误立即放弃。远程 `http(s)` 图片会先由代理主动拉取并转成 data URL 再交给视觉模型（15 秒超时、10MB 上限），这样内网/localhost 等上游不可达的地址也能识图；拉取失败或过大则回退原地址交给上游处理。
 
 ## Visual Studio 2026 + GitHub Copilot 接入国内大模型
 

@@ -44,14 +44,14 @@ builder.Services.AddSingleton<ImageVisionRelay>(sp =>
 {
     var configuration = sp.GetRequiredService<IConfiguration>();
     var registry = sp.GetRequiredService<IAiProviderRegistry>();
+    var httpClientFactory = sp.GetRequiredService<IHttpClientFactory>();
     var section = configuration.GetSection(ImageVisionRelayOptions.SectionName);
     var options = new ImageVisionRelayOptions
     {
         Enabled = section.GetValue(nameof(ImageVisionRelayOptions.Enabled), true),
-        VisionModel = section.GetValue(nameof(ImageVisionRelayOptions.VisionModel), "") ?? "",
-        Prompt = section.GetValue(nameof(ImageVisionRelayOptions.Prompt), "") ?? ""
+        VisionModel = section.GetValue(nameof(ImageVisionRelayOptions.VisionModel), "") ?? ""
     };
-    return new ImageVisionRelay(registry, options);
+    return new ImageVisionRelay(registry, options, httpClientFactory);
 });
 
 var app = builder.Build();
