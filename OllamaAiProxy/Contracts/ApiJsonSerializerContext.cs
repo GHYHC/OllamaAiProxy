@@ -7,6 +7,7 @@ namespace OllamaAiProxy.Contracts;
 [JsonSerializable(typeof(ApiErrorResponse))]
 [JsonSerializable(typeof(HealthResponse))]
 [JsonSerializable(typeof(VersionResponse))]
+[JsonSerializable(typeof(GitHubRelease))]
 [JsonSerializable(typeof(OllamaTagsResponse))]
 [JsonSerializable(typeof(OllamaShowResponse))]
 [JsonSerializable(typeof(OpenAiModelsResponse))]

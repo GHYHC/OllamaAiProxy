@@ -1,0 +1,42 @@
+name: Tests
+
+# 跨平台单元/集成测试闸门：在每个目标 OS + 架构上运行测试套件，
+# 覆盖自更新功能的平台 RID 映射、安装包解压、校验等逻辑（以及既有图片视觉中继测试）。
+
+on:
+  push:
+    paths-ignore:
+      - "README.md"
+      - "*.md"
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_VERSION: 10.0.x
+
+jobs:
+  test:
+    name: Tests on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-latest
+          - macos-14
+          - ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Run tests
+        run: dotnet run --project tests/OllamaAiProxy.Tests/OllamaAiProxy.Tests.csproj

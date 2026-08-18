@@ -1,5 +1,10 @@
+using System.Collections.Concurrent;
+using System.Formats.Tar;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using OllamaAiProxy.Contracts;
@@ -91,6 +96,54 @@ static (string Url, Action Stop) StartServer(int status, byte[] body, string con
 
 ImageVisionRelay NewRelay(StubProvider p) =>
     new(new StubRegistry(p), new ImageVisionRelayOptions { Enabled = true, VisionModel = "stub/vision" }, new SimpleHttpClientFactory());
+
+// 生成 tar.gz 安装包（与 release.yml 的 tar -czf 产物一致，不包含顶层目录）。
+static void CreateTarGz(string srcDir, string destPath)
+{
+    using var outFile = new FileStream(destPath, FileMode.Create);
+    using var gzip = new GZipStream(outFile, CompressionLevel.Optimal);
+    TarFile.CreateFromDirectory(srcDir, gzip, includeBaseDirectory: false);
+}
+
+// 构造一个模拟 GitHub Release 服务器：/releases/latest 返回新版本 JSON，
+// 附带一个指向本地 zip 的资产与 SHA256SUMS.txt。
+// correctChecksum=false 时提供错误的校验和，用于负向测试。
+static (MockHttpServer Server, string AppDir, string Work) StartMockRelease(
+    bool correctChecksum, string tag = "v9.9.9", string exeName = "OllamaAiProxy.exe")
+{
+    var work = Path.Combine(Path.GetTempPath(), "autoupdate-e2e-" + Guid.NewGuid().ToString("N"));
+    var appDir = Path.Combine(work, "app");
+    Directory.CreateDirectory(appDir);
+    var pkgDir = Path.Combine(work, "pkg");
+    Directory.CreateDirectory(Path.Combine(pkgDir, "wwwroot"));
+    File.WriteAllText(Path.Combine(pkgDir, exeName), "new exe content");
+    File.WriteAllText(Path.Combine(pkgDir, "wwwroot", "index.html"), "<html>new</html>");
+    File.WriteAllText(Path.Combine(pkgDir, "appsettings.json"), "{ user config }");
+    File.WriteAllText(Path.Combine(pkgDir, "model-overrides.json"), "{}");
+
+    var assetName = AutoUpdater.BuildAssetName(tag, "win-x64");
+    var zipPath = Path.Combine(work, assetName);
+    ZipFile.CreateFromDirectory(pkgDir, zipPath);
+    var zipBytes = File.ReadAllBytes(zipPath);
+    var hash = Convert.ToHexString(SHA256.HashData(zipBytes)).ToLowerInvariant();
+    var expectedHash = correctChecksum ? hash : new string('0', 64);
+
+    var server = new MockHttpServer();
+    var json = $$"""
+    {
+      "tag_name": "{{tag}}",
+      "name": "{{tag}}",
+      "assets": [
+        { "name": "{{assetName}}", "browser_download_url": "{{server.BaseUrl}}asset.bin", "digest": "" },
+        { "name": "SHA256SUMS.txt", "browser_download_url": "{{server.BaseUrl}}SHA256SUMS.txt", "digest": "" }
+      ]
+    }
+    """;
+    server.Add("/repos/GHYHC/OllamaAiProxy/releases/latest", 200, "application/json", Encoding.UTF8.GetBytes(json));
+    server.Add("/asset.bin", 200, "application/zip", zipBytes);
+    server.Add("/SHA256SUMS.txt", 200, "text/plain", Encoding.UTF8.GetBytes($"{expectedHash}  {assetName}"));
+    return (server, appDir, work);
+}
 
 // ---- tests ----
 
@@ -287,6 +340,243 @@ await Run("cancellation propagates without retry (#1 fix)", async () =>
     Check(p.Calls.Count == 0, "no vision call made when already cancelled");
 });
 
+// ---- 自动更新（AutoUpdate） ----
+
+await Run("autoupdate: version parse & compare", async () =>
+{
+    Check(AutoUpdater.TryParseVersion("v1.0.9", out var v1) && v1 == new Version(1, 0, 9, 0), "v1.0.9 parsed");
+    Check(AutoUpdater.TryParseVersion("1.0.10", out var v2) && v2 == new Version(1, 0, 10, 0), "1.0.10 parsed");
+    Check(AutoUpdater.TryParseVersion("v1.0.8", out var v3) && v3 == new Version(1, 0, 8, 0), "v1.0.8 parsed");
+    Check(AutoUpdater.TryParseVersion("v1.0.9-rc1", out var v4) && v4 == new Version(1, 0, 9, 0), "pre-release suffix stripped");
+    Check(!AutoUpdater.TryParseVersion("abc", out _), "malformed rejected");
+    Check(!AutoUpdater.TryParseVersion("", out _), "empty rejected");
+    Check(!AutoUpdater.TryParseVersion(null, out _), "null rejected");
+    Check(new Version(1, 0, 9, 0) > new Version(1, 0, 8, 0), "1.0.9 > 1.0.8 (update needed)");
+    Check(new Version(1, 0, 10, 0) > new Version(1, 0, 9, 0), "1.0.10 > 1.0.9 (update needed)");
+    Check(!(new Version(1, 0, 8, 0) > new Version(1, 0, 8, 0)), "equal is not newer");
+    Check(!(new Version(1, 0, 7, 0) > new Version(1, 0, 8, 0)), "older is not newer");
+});
+
+await Run("autoupdate: asset name for all 6 platforms", async () =>
+{
+    Check(AutoUpdater.BuildAssetName("v1.0.9", "win-x64") == "OllamaAiProxy-v1.0.9-win-x64.zip", "win-x64 -> zip");
+    Check(AutoUpdater.BuildAssetName("v1.0.9", "win-arm64") == "OllamaAiProxy-v1.0.9-win-arm64.zip", "win-arm64 -> zip");
+    Check(AutoUpdater.BuildAssetName("v1.0.9", "linux-x64") == "OllamaAiProxy-v1.0.9-linux-x64.tar.gz", "linux-x64 -> tar.gz");
+    Check(AutoUpdater.BuildAssetName("v1.0.9", "linux-arm64") == "OllamaAiProxy-v1.0.9-linux-arm64.tar.gz", "linux-arm64 -> tar.gz");
+    Check(AutoUpdater.BuildAssetName("v1.0.9", "osx-x64") == "OllamaAiProxy-v1.0.9-osx-x64.tar.gz", "osx-x64 -> tar.gz");
+    Check(AutoUpdater.BuildAssetName("v1.0.9", "osx-arm64") == "OllamaAiProxy-v1.0.9-osx-arm64.tar.gz", "osx-arm64 -> tar.gz");
+});
+
+await Run("autoupdate: detect rid for current platform", async () =>
+{
+    var rid = AutoUpdater.DetectRid();
+    var arch = RuntimeInformation.ProcessArchitecture;
+    string? expected = null;
+    if (OperatingSystem.IsWindows())
+        expected = arch == Architecture.Arm64 ? "win-arm64" : arch == Architecture.X64 ? "win-x64" : null;
+    else if (OperatingSystem.IsLinux())
+        expected = arch == Architecture.Arm64 ? "linux-arm64" : arch == Architecture.X64 ? "linux-x64" : null;
+    else if (OperatingSystem.IsMacOS())
+        expected = arch == Architecture.Arm64 ? "osx-arm64" : arch == Architecture.X64 ? "osx-x64" : null;
+    Check(rid == expected, $"DetectRid matches current platform ({rid})");
+});
+
+await Run("autoupdate: github release JSON parse (snake_case)", async () =>
+{
+    const string json = """
+    {
+      "tag_name": "v9.9.9",
+      "name": "v9.9.9",
+      "prerelease": false,
+      "assets": [
+        { "name": "OllamaAiProxy-v9.9.9-win-x64.zip", "browser_download_url": "https://example.com/a.zip", "digest": "sha256:abcd" }
+      ]
+    }
+    """;
+    var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
+    var release = JsonSerializer.Deserialize<GitHubRelease>(json, options);
+    Check(release is not null, "release parsed");
+    Check(release!.TagName == "v9.9.9", "tag_name parsed");
+    Check(release.Assets.Count == 1, "one asset");
+    Check(release.Assets[0].Name == "OllamaAiProxy-v9.9.9-win-x64.zip", "asset name parsed");
+    Check(release.Assets[0].BrowserDownloadUrl == "https://example.com/a.zip", "asset url parsed");
+    Check(release.Assets[0].Digest == "sha256:abcd", "asset digest parsed");
+});
+
+await Run("autoupdate: sha256 verify + checksum line parse", async () =>
+{
+    var dir = Path.Combine(Path.GetTempPath(), "autoupdate-sha-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(dir);
+    try
+    {
+        var file = Path.Combine(dir, "OllamaAiProxy-v9.9.9-win-x64.zip");
+        await File.WriteAllTextAsync(file, "hello autoupdate");
+        var hash = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(file))).ToLowerInvariant();
+
+        Check(AutoUpdater.VerifySha256(file, hash), "checksum matches");
+        Check(!AutoUpdater.VerifySha256(file, new string('0', 64)), "checksum mismatch detected");
+        Check(!AutoUpdater.VerifySha256(file, "nothex"), "invalid hex rejected");
+
+        var sums = $"{hash}  OllamaAiProxy-v9.9.9-win-x64.zip\n{hash}  OllamaAiProxy-v9.9.9-win-arm64.zip";
+        Check(AutoUpdater.ParseChecksumLine(sums, "OllamaAiProxy-v9.9.9-win-x64.zip") == hash, "checksum line parsed");
+        Check(AutoUpdater.ParseChecksumLine(sums, "nope.zip") is null, "missing file returns null");
+    }
+    finally { Directory.Delete(dir, recursive: true); }
+});
+
+await Run("autoupdate: zip/tar.gz extraction excludes user files", async () =>
+{
+    var dir = Path.Combine(Path.GetTempPath(), "autoupdate-extract-" + Guid.NewGuid().ToString("N"));
+    var src = Path.Combine(dir, "src");
+    Directory.CreateDirectory(Path.Combine(src, "wwwroot"));
+    await File.WriteAllTextAsync(Path.Combine(src, "OllamaAiProxy.exe"), "fake exe");
+    await File.WriteAllTextAsync(Path.Combine(src, "wwwroot", "index.html"), "<html></html>");
+    await File.WriteAllTextAsync(Path.Combine(src, "appsettings.json"), "{ \"Providers\": {} }");
+    await File.WriteAllTextAsync(Path.Combine(src, "model-overrides.json"), "{}");
+    try
+    {
+        var zipPath = Path.Combine(dir, "pkg.zip");
+        ZipFile.CreateFromDirectory(src, zipPath);
+        var stagingZip = Path.Combine(dir, "staging-zip");
+        AutoUpdater.ExtractArchive(zipPath, stagingZip);
+        AutoUpdater.ExcludePreservedFiles(stagingZip);
+        Check(File.Exists(Path.Combine(stagingZip, "OllamaAiProxy.exe")), "zip: exe extracted");
+        Check(File.Exists(Path.Combine(stagingZip, "wwwroot", "index.html")), "zip: wwwroot extracted");
+        Check(!File.Exists(Path.Combine(stagingZip, "appsettings.json")), "zip: appsettings.json excluded");
+        Check(!File.Exists(Path.Combine(stagingZip, "model-overrides.json")), "zip: model-overrides.json excluded");
+
+        var tarGzPath = Path.Combine(dir, "pkg.tar.gz");
+        CreateTarGz(src, tarGzPath);
+        var stagingTar = Path.Combine(dir, "staging-tar");
+        AutoUpdater.ExtractArchive(tarGzPath, stagingTar);
+        AutoUpdater.ExcludePreservedFiles(stagingTar);
+        Check(File.Exists(Path.Combine(stagingTar, "OllamaAiProxy.exe")), "tar.gz: exe extracted");
+        Check(File.Exists(Path.Combine(stagingTar, "wwwroot", "index.html")), "tar.gz: wwwroot extracted");
+        Check(!File.Exists(Path.Combine(stagingTar, "appsettings.json")), "tar.gz: appsettings.json excluded");
+    }
+    finally { Directory.Delete(dir, recursive: true); }
+});
+
+await Run("autoupdate: update scripts generated for both platforms", async () =>
+{
+    var win = AutoUpdater.BuildWindowsScript("OllamaAiProxy.exe");
+    Check(win.Contains("set \"EXE=OllamaAiProxy.exe\""), "win script bakes exe name");
+    Check(win.Contains("tasklist /FI \"PID eq %1\""), "win script waits for pid");
+    Check(win.Contains("%EXE%.old"), "win script renames old exe");
+    Check(win.Contains("xcopy /y /e /q \"%UPD%staging\\*\""), "win script copies staging");
+    Check(win.Contains("start \"\" \"%APP%\\%EXE%\""), "win script restarts");
+    Check(win.Contains("if \"%2\"==\"1\""), "win script honors restart flag");
+    Check(win.IndexOf("start \"\" \"%APP%\\%EXE%\"") < win.IndexOf("rmdir /s /q \"%UPD%\""),
+        "win relaunch happens before cleanup (self-delete must not abort start)");
+
+    var unix = AutoUpdater.BuildUnixScript("OllamaAiProxy");
+    Check(unix.Contains("trap '' HUP"), "unix script ignores HUP");
+    Check(unix.Contains("kill -0 \"$PID\""), "unix script waits for pid");
+    Check(unix.Contains("mv -f \"$APP/$EXE\" \"$APP/$EXE.old\""), "unix script renames old exe");
+    Check(unix.Contains("cp -rf \"$UPD/staging/.\" \"$APP/\""), "unix script copies staging");
+    Check(unix.Contains("chmod +x \"$APP/$EXE\""), "unix script chmods");
+    Check(unix.Contains("nohup \"./$EXE\" >> \"$APP/server.log\" 2>&1 &"), "unix script restarts detached");
+    Check(unix.IndexOf("nohup") < unix.IndexOf("rm -rf \"$UPD\""),
+        "unix relaunch happens before cleanup (self-delete must not abort shell)");
+});
+
+await Run("autoupdate: end-to-end download + verify + stage (mock GitHub)", async () =>
+{
+    var (server, appDir, work) = StartMockRelease(correctChecksum: true);
+    var launched = new List<string>();
+    try
+    {
+        var updater = new AutoUpdater(
+            new HttpClient { Timeout = TimeSpan.FromSeconds(30) },
+            new AutoUpdateOptions { ApiBaseUrl = server.BaseUrl, CheckTimeoutSeconds = 5 },
+            currentVersion: new Version(1, 0, 8),
+            appDir: appDir,
+            exeName: "OllamaAiProxy.exe",
+            launcher: (p, a) => launched.Add($"{p}|{a}"),
+            isDeployable: () => true);
+
+        var outcome = await updater.CheckAndApplyAsync(CancellationToken.None);
+        Check(outcome == AutoUpdateOutcome.Applying, "outcome is Applying");
+
+        var staging = Path.Combine(appDir, ".update", "staging");
+        Check(File.Exists(Path.Combine(staging, "OllamaAiProxy.exe")), "staging has exe");
+        Check(File.Exists(Path.Combine(staging, "wwwroot", "index.html")), "staging has wwwroot");
+        Check(!File.Exists(Path.Combine(staging, "appsettings.json")), "staging excluded appsettings.json");
+        Check(!File.Exists(Path.Combine(staging, "model-overrides.json")), "staging excluded model-overrides.json");
+
+        var scripts = Directory.GetFiles(Path.Combine(appDir, ".update"), "update.*");
+        Check(scripts.Length == 1, "update script written");
+        Check(launched.Count == 1 && launched[0].StartsWith(Path.Combine(appDir, ".update")), "launcher invoked with script path");
+        Check(launched[0].EndsWith(" 1"), "restart flag passed");
+    }
+    finally
+    {
+        server.Dispose();
+        try { Directory.Delete(work, recursive: true); } catch { }
+    }
+});
+
+await Run("autoupdate: checksum mismatch aborts and cleans up", async () =>
+{
+    var (server, appDir, work) = StartMockRelease(correctChecksum: false);
+    try
+    {
+        var updater = new AutoUpdater(
+            new HttpClient { Timeout = TimeSpan.FromSeconds(30) },
+            new AutoUpdateOptions { ApiBaseUrl = server.BaseUrl, CheckTimeoutSeconds = 5 },
+            currentVersion: new Version(1, 0, 8),
+            appDir: appDir,
+            exeName: "OllamaAiProxy.exe",
+            launcher: (_, _) => { },
+            isDeployable: () => true);
+        var outcome = await updater.CheckAndApplyAsync(CancellationToken.None);
+        Check(outcome == AutoUpdateOutcome.Failed, "checksum mismatch -> Failed");
+        Check(!Directory.Exists(Path.Combine(appDir, ".update")), ".update cleaned up after failure");
+    }
+    finally
+    {
+        server.Dispose();
+        try { Directory.Delete(work, recursive: true); } catch { }
+    }
+});
+
+await Run("autoupdate: older release is up to date (no download)", async () =>
+{
+    var (server, appDir, work) = StartMockRelease(correctChecksum: true, tag: "v1.0.7");
+    try
+    {
+        var updater = new AutoUpdater(
+            new HttpClient { Timeout = TimeSpan.FromSeconds(30) },
+            new AutoUpdateOptions { ApiBaseUrl = server.BaseUrl, CheckTimeoutSeconds = 5 },
+            currentVersion: new Version(1, 0, 8),
+            appDir: appDir,
+            exeName: "OllamaAiProxy.exe",
+            launcher: (_, _) => { },
+            isDeployable: () => true);
+        var outcome = await updater.CheckAndApplyAsync(CancellationToken.None);
+        Check(outcome == AutoUpdateOutcome.UpToDate, "older release -> UpToDate");
+        Check(!Directory.Exists(Path.Combine(appDir, ".update")), "no .update created");
+    }
+    finally
+    {
+        server.Dispose();
+        try { Directory.Delete(work, recursive: true); } catch { }
+    }
+});
+
+await Run("autoupdate: disabled option skips check", async () =>
+{
+    var updater = new AutoUpdater(
+        new HttpClient(),
+        new AutoUpdateOptions { Enabled = false },
+        currentVersion: new Version(1, 0, 8),
+        appDir: Path.GetTempPath(),
+        exeName: "OllamaAiProxy.exe",
+        isDeployable: () => true);
+    var outcome = await updater.CheckAndApplyAsync(CancellationToken.None);
+    Check(outcome == AutoUpdateOutcome.Disabled, "disabled -> Disabled");
+});
+
 Console.WriteLine($"\n==== {failed} failure(s) ====");
 return failed;
 
@@ -388,4 +678,73 @@ sealed class StubRegistry : IAiProviderRegistry
 sealed class SimpleHttpClientFactory : IHttpClientFactory
 {
     public HttpClient CreateClient(string name) => new HttpClient();
+}
+
+// 多路由的本地模拟 HTTP 服务器，用于端到端测试自更新（模拟 GitHub API 与附件下载）。
+sealed class MockHttpServer : IDisposable
+{
+    private readonly HttpListener _listener;
+    private readonly ConcurrentDictionary<string, (int Status, string ContentType, byte[] Body)> _routes =
+        new(StringComparer.Ordinal);
+
+    public string BaseUrl { get; }
+
+    public MockHttpServer()
+    {
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            var port = NextFreePort();
+            var listener = new HttpListener();
+            try { listener.Prefixes.Add($"http://127.0.0.1:{port}/"); listener.Start(); }
+            catch { continue; }
+            _listener = listener;
+            BaseUrl = $"http://127.0.0.1:{port}/";
+            _ = Task.Run(async () =>
+            {
+                while (_listener.IsListening)
+                {
+                    HttpListenerContext ctx;
+                    try { ctx = await _listener.GetContextAsync(); }
+                    catch { break; }
+                    _ = Task.Run(() =>
+                    {
+                        try
+                        {
+                            if (_routes.TryGetValue(ctx.Request.Url!.AbsolutePath, out var route))
+                            {
+                                ctx.Response.StatusCode = route.Status;
+                                ctx.Response.ContentType = route.ContentType;
+                                if (route.Body.Length > 0) ctx.Response.OutputStream.Write(route.Body, 0, route.Body.Length);
+                            }
+                            else
+                            {
+                                ctx.Response.StatusCode = 404;
+                            }
+                            ctx.Response.Close();
+                        }
+                        catch { }
+                    });
+                }
+            });
+            return;
+        }
+        throw new InvalidOperationException("could not start mock HTTP server");
+    }
+
+    private static int NextFreePort()
+    {
+        using var l = new TcpListener(IPAddress.Loopback, 0);
+        l.Start();
+        var port = ((IPEndPoint)l.LocalEndpoint).Port;
+        l.Stop();
+        return port;
+    }
+
+    public void Add(string path, int status, string contentType, byte[] body) =>
+        _routes[path] = (status, contentType, body);
+
+    public void Dispose()
+    {
+        try { _listener.Stop(); _listener.Close(); } catch { }
+    }
 }

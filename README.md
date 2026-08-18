@@ -304,6 +304,50 @@ curl http://localhost:11434/api/show `
 
 日志可能包含提示词、响应内容或敏感信息，排查完成后建议关闭。
 
+## 自动更新
+
+默认开启：每次启动时，在服务开始监听前，程序会先检查 GitHub `GHYHC/OllamaAiProxy` 的最新**稳定版** Release。如果比当前版本新，会自动下载匹配当前系统的安装包、校验 SHA256、解压暂存，然后替换可执行文件并自动重启到新版本。
+
+- 支持全部 6 个目标平台：`win-x64`、`win-arm64`、`linux-x64`、`linux-arm64`、`osx-x64`、`osx-arm64`（按运行时的 OS + 架构自动选择，也可用 `PlatformRid` 覆盖）。
+- 更新时**不会覆盖**用户数据：`appsettings.json`、`model-overrides.json`、`logs/` 目录都会保留。
+- 校验不通过、下载失败、网络不可达、找不到对应平台的安装包等情况，都会记日志并**继续用当前版本正常启动**，不会中断服务。
+- 通过 `dotnet run`（非单文件发布）运行时自动跳过自更新。
+- 更新重启会导致数秒服务中断，这是"重启时更新"的固有特性。
+
+配置（`appsettings.json` 的 `AutoUpdate` 节）：
+
+```json
+{
+  "AutoUpdate": {
+    "Enabled": true,
+    "Repository": "GHYHC/OllamaAiProxy",
+    "CheckTimeoutSeconds": 10,
+    "RestartAfterUpdate": true,
+    "ApiBaseUrl": "https://api.github.com",
+    "PlatformRid": ""
+  }
+}
+```
+
+| 字段 | 说明 | 默认值 |
+| --- | --- | --- |
+| `Enabled` | 是否在启动时检查并自动更新。设为 `false` 完全关闭。 | `true` |
+| `Repository` | GitHub 仓库，格式 `owner/repo`。 | `GHYHC/OllamaAiProxy` |
+| `CheckTimeoutSeconds` | 查询最新版本的超时秒数（下载安装包不受此限制）。 | `10` |
+| `RestartAfterUpdate` | 更新后是否自动重启到新版本。**用 systemd 等进程管理器托管时建议设为 `false`**，避免脚本内的后台重启与管理器拉起产生双实例。 | `true` |
+| `ApiBaseUrl` | GitHub API 根地址。测试或自建 GitHub Enterprise 时可覆盖。 | `https://api.github.com` |
+| `PlatformRid` | 平台标识覆盖，例如 `linux-arm64`。留空则自动检测。用于特殊环境或手工测试。 | 空 |
+
+> 平台与安装包对应关系（与 GitHub Release 附件命名一致）：Windows x64/ARM64 → `.zip`；Linux/macOS x64/ARM64 → `.tar.gz`。
+>
+> Windows 上执行自动更新时会短暂弹出控制台窗口（用于替换可执行文件并重启），属一次性正常现象。
+
+**回滚**：更新成功后会保留旧可执行文件为 `*.old` 备份，下次成功启动时自动清理。如需手动回滚，把 `*.old` 改回原名即可。
+
+**注意**：
+- macOS 下若首次运行被 Gatekeeper 拦截，可在「系统设置 → 隐私与安全性」允许，或执行 `xattr -dr com.apple.quarantine OllamaAiProxy`。
+- Windows 下若杀毒软件拦截新版本可执行文件，请将程序目录加入白名单。
+
 ## ApiKey 多 Key 与 429 自动切换
 
 每个 provider 的 `ApiKeys` 支持配置多个 API Key。当一个 Key 触发上游 HTTP 429（Rate Limit）时，代理会自动将该 Key 标记为不可用，并切换到下一个可用 Key 重试请求。所有 Key 都被标记后，最后一个 429 响应会被返回给客户端。

@@ -54,6 +54,15 @@ builder.Services.AddSingleton<ImageVisionRelay>(sp =>
     return new ImageVisionRelay(registry, options, httpClientFactory);
 });
 
+// 自动更新：在 Web 宿主启动前先检查 GitHub 是否有新版本，有则下载、校验并暂存，
+// 启动更新脚本后退出当前进程，由脚本替换可执行文件并重启。
+var autoUpdateOptions = ReadAutoUpdateOptions(builder.Configuration.GetSection(AutoUpdateOptions.SectionName));
+var autoUpdateOutcome = await new AutoUpdater(
+    new HttpClient { Timeout = TimeSpan.FromMinutes(5) },
+    autoUpdateOptions).CheckAndApplyAsync(CancellationToken.None);
+if (autoUpdateOutcome == AutoUpdateOutcome.Applying)
+    return;
+
 var app = builder.Build();
 // 加载用户自定义的模型详情覆盖数据。
 await app.Services.GetRequiredService<ModelOverridesStore>().LoadAsync();
@@ -382,6 +391,21 @@ static VolcengineCodingPlanOptions ReadVolcengineCodingPlanOption(IConfiguration
     options.BaseUrl = section.GetValue(nameof(VolcengineCodingPlanOptions.BaseUrl), options.BaseUrl) ?? options.BaseUrl;
     options.ApiKeys = section.GetSection("ApiKeys").Get<string[]>() ?? [];
     return options;
+}
+
+// 读取自动更新配置；未配置的项使用 AutoUpdateOptions 的默认值。
+static AutoUpdateOptions ReadAutoUpdateOptions(IConfigurationSection section)
+{
+    var options = new AutoUpdateOptions();
+    return options with
+    {
+        Enabled = section.GetValue(nameof(AutoUpdateOptions.Enabled), options.Enabled),
+        Repository = section.GetValue(nameof(AutoUpdateOptions.Repository), options.Repository) ?? options.Repository,
+        CheckTimeoutSeconds = section.GetValue(nameof(AutoUpdateOptions.CheckTimeoutSeconds), options.CheckTimeoutSeconds),
+        RestartAfterUpdate = section.GetValue(nameof(AutoUpdateOptions.RestartAfterUpdate), options.RestartAfterUpdate),
+        ApiBaseUrl = section.GetValue(nameof(AutoUpdateOptions.ApiBaseUrl), options.ApiBaseUrl) ?? options.ApiBaseUrl,
+        PlatformRid = section.GetValue(nameof(AutoUpdateOptions.PlatformRid), options.PlatformRid) ?? options.PlatformRid
+    };
 }
 
 // 读取 Ollama /api/show 可选的 model 字段；非法 JSON 在这里按“未提供 model”处理。
