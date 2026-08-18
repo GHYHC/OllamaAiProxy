@@ -488,7 +488,7 @@ await Run("autoupdate: end-to-end download + verify + stage (mock GitHub)", asyn
     {
         var updater = new AutoUpdater(
             new HttpClient { Timeout = TimeSpan.FromSeconds(30) },
-            new AutoUpdateOptions { ApiBaseUrl = server.BaseUrl, CheckTimeoutSeconds = 5 },
+            new AutoUpdateOptions { ApiBaseUrl = server.BaseUrl, CheckTimeoutSeconds = 5, PlatformRid = "win-x64" },
             currentVersion: new Version(1, 0, 8),
             appDir: appDir,
             exeName: "OllamaAiProxy.exe",
@@ -523,7 +523,7 @@ await Run("autoupdate: checksum mismatch aborts and cleans up", async () =>
     {
         var updater = new AutoUpdater(
             new HttpClient { Timeout = TimeSpan.FromSeconds(30) },
-            new AutoUpdateOptions { ApiBaseUrl = server.BaseUrl, CheckTimeoutSeconds = 5 },
+            new AutoUpdateOptions { ApiBaseUrl = server.BaseUrl, CheckTimeoutSeconds = 5, PlatformRid = "win-x64" },
             currentVersion: new Version(1, 0, 8),
             appDir: appDir,
             exeName: "OllamaAiProxy.exe",
@@ -547,7 +547,7 @@ await Run("autoupdate: older release is up to date (no download)", async () =>
     {
         var updater = new AutoUpdater(
             new HttpClient { Timeout = TimeSpan.FromSeconds(30) },
-            new AutoUpdateOptions { ApiBaseUrl = server.BaseUrl, CheckTimeoutSeconds = 5 },
+            new AutoUpdateOptions { ApiBaseUrl = server.BaseUrl, CheckTimeoutSeconds = 5, PlatformRid = "win-x64" },
             currentVersion: new Version(1, 0, 8),
             appDir: appDir,
             exeName: "OllamaAiProxy.exe",

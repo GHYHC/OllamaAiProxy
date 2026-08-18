@@ -4,7 +4,10 @@ name: Tests
 # 覆盖自更新功能的平台 RID 映射、安装包解压、校验等逻辑（以及既有图片视觉中继测试）。
 
 on:
+  # 只在分支推送（含 PR 合并到主干）时运行；tag 推送不触发，避免与 Release 重复。
   push:
+    branches:
+      - "**"
     paths-ignore:
       - "README.md"
       - "*.md"
