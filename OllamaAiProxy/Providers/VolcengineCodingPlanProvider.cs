@@ -149,7 +149,7 @@ public sealed class VolcengineCodingPlanProvider : IAiProvider
     // Coding Plan 支持的模型（来源：方舟 Coding Plan 文档「支持的模型」）。
     // 上下文长度/最大输出按官方文档整理；视觉/思考能力按文档说明标注。
     // 已移除文档标注「即将下线」的模型：doubao-seed-2.0-code、doubao-seed-2.0-pro、
-    // doubao-seed-code、minimax-m2.7、kimi-k2.6。
+    // doubao-seed-code、minimax-m2.7、kimi-k2.6、glm-5.2。
     private static IReadOnlyList<AiModel> GetKnownModels(string family)
     {
         return new[]
@@ -161,7 +161,7 @@ public sealed class VolcengineCodingPlanProvider : IAiProvider
             CreateModel("doubao-seed-2.0-lite", "Doubao Seed 2.0 Lite", 262144, 131072, vision: true, family),
             CreateModel("minimax-m3", "MiniMax M3", 1048576, 131072, vision: true, family),
             CreateModel("kimi-k2.7-code", "Kimi K2.7 Code", 262144, 32768, vision: true, family),
-            CreateModel("glm-5.2", "GLM 5.2", 1048576, 131072, vision: false, family),
+            CreateModel("glm-5.3", "GLM 5.3", 1048576, 131072, vision: false, family),
             CreateModel("deepseek-v4-flash", "DeepSeek V4 Flash", 1048576, 393216, vision: false, family),
             CreateModel("deepseek-v4-pro", "DeepSeek V4 Pro", 1048576, 393216, vision: false, family)
         };
