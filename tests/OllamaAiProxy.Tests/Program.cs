@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using OllamaAiProxy.Contracts;
 using OllamaAiProxy.Providers;
 using OllamaAiProxy.Services;
@@ -340,6 +341,84 @@ await Run("cancellation propagates without retry (#1 fix)", async () =>
     Check(p.Calls.Count == 0, "no vision call made when already cancelled");
 });
 
+// ---- 思考强度（ThinkingStrengthInjector） ----
+
+await Run("thinking strength injector", async () =>
+{
+    using var chat = J(new { model = "stub/x", stream = false, messages = new[] { new { role = "user", content = "hi" } } });
+    using var chatHigh = ThinkingStrengthInjector.Apply(chat, "high", responses: false);
+    Check(chatHigh is not null, "chat: injects when no explicit effort");
+    var chatRoot = chatHigh!.RootElement;
+    Check(chatRoot.GetProperty("reasoning_effort").GetString() == "high", "chat: reasoning_effort=high");
+    Check(chatRoot.GetProperty("model").GetString() == "stub/x", "chat: model preserved");
+    Check(chatRoot.GetProperty("stream").GetBoolean() == false, "chat: stream preserved");
+    Check(chatRoot.GetProperty("messages").GetArrayLength() == 1, "chat: messages preserved");
+    chatHigh.Dispose();
+
+    using var resp = J(new { model = "stub/x", input = new[] { new { role = "user", content = "hi" } } });
+    using var respMid = ThinkingStrengthInjector.Apply(resp, "medium", responses: true);
+    Check(respMid is not null, "responses: injects when no explicit reasoning");
+    var respRoot = respMid!.RootElement;
+    Check(respRoot.GetProperty("reasoning").GetProperty("effort").GetString() == "medium", "responses: reasoning.effort=medium");
+    Check(respRoot.GetProperty("model").GetString() == "stub/x", "responses: model preserved");
+    respMid.Dispose();
+
+    using var chatExplicit = J(new { model = "stub/x", reasoning_effort = "low", messages = new object[0] });
+    using var chatNo = ThinkingStrengthInjector.Apply(chatExplicit, "high", responses: false);
+    Check(chatNo is null, "chat: explicit reasoning_effort respected (no inject)");
+
+    using var respExplicit = J(new { model = "stub/x", reasoning = new { effort = "low" }, input = new object[0] });
+    using var respNo = ThinkingStrengthInjector.Apply(respExplicit, "high", responses: true);
+    Check(respNo is null, "responses: explicit reasoning respected (no inject)");
+
+    using var chatBase = J(new { model = "stub/x" });
+    Check(ThinkingStrengthInjector.Apply(chatBase, null, responses: false) is null, "null level -> no inject");
+    Check(ThinkingStrengthInjector.Apply(chatBase, "", responses: false) is null, "empty level -> no inject");
+    Check(ThinkingStrengthInjector.Apply(chatBase, "extreme", responses: false) is null, "invalid level -> no inject");
+    using var chatNone = ThinkingStrengthInjector.Apply(chatBase, "none", responses: false);
+    Check(chatNone is not null && chatNone.RootElement.GetProperty("reasoning_effort").GetString() == "none", "none maps to reasoning_effort=none");
+    chatNone?.Dispose();
+
+    Check(ThinkingStrengthInjector.IsValidLevel("high") && ThinkingStrengthInjector.IsValidLevel("none")
+        && ThinkingStrengthInjector.IsValidLevel("low") && ThinkingStrengthInjector.IsValidLevel("medium"), "IsValidLevel accepts all levels");
+    Check(!ThinkingStrengthInjector.IsValidLevel(null) && !ThinkingStrengthInjector.IsValidLevel("") && !ThinkingStrengthInjector.IsValidLevel("max"), "IsValidLevel rejects invalid values");
+});
+
+await Run("thinking strength override round-trips as camelCase", async () =>
+{
+    var opts = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+    var ov = new ModelOverride
+    {
+        DisplayName = "X",
+        ImageRelay = true,
+        ThinkingStrength = "high"
+    };
+    var json = JsonSerializer.Serialize(ov, opts);
+    Check(json.Contains("\"thinkingStrength\":\"high\""), $"thinkingStrength serialized camelCase: {json}");
+    Check(json.Contains("\"imageRelay\":true"), "imageRelay still camelCase");
+
+    var back = JsonSerializer.Deserialize<ModelOverride>(json, opts);
+    Check(back is not null && back!.ThinkingStrength == "high" && back.ImageRelay == true && back.DisplayName == "X",
+        "camelCase thinkingStrength deserializes back");
+});
+
+// 复现 Program.cs 对最小 API 请求体的 JsonOptions 配置（Web 默认 camelCase 反射解析器 +
+// snake_case source-gen 上下文插入 TypeInfoResolverChain 首位），确认 PUT 请求体里的
+// camelCase 键（displayName/imageRelay/thinkingStrength 等）仍能正常绑定到 ModelOverride。
+// 这保证测试页「编辑->保存」的覆盖值写入（含新加的 thinkingStrength）在 HEAD 上可用。
+await Run("json options chain: camelCase body binding with snake_case source-gen context", async () =>
+{
+    var json = """{"displayName":"X","imageRelay":true,"thinkingStrength":"high","maxOutputTokens":123}""";
+    var opts = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+    opts.TypeInfoResolverChain.Insert(0, SnakeCaseBindingJsonContext.Default);
+    var ov = JsonSerializer.Deserialize(json, typeof(BindingBody), opts) as BindingBody;
+    Check(ov is not null, "body deserialized");
+    Check(ov!.DisplayName == "X", $"camelCase displayName binds (got '{ov.DisplayName}')");
+    Check(ov.ImageRelay == true, "camelCase imageRelay binds");
+    Check(ov.ThinkingStrength == "high", "camelCase thinkingStrength binds");
+    Check(ov.MaxOutputTokens == 123, "camelCase maxOutputTokens binds");
+});
+
 // ---- 自动更新（AutoUpdate） ----
 
 await Run("autoupdate: version parse & compare", async () =>
@@ -605,6 +684,22 @@ static class H
 }
 
 // ---- stubs ----
+
+// 用于复现 Program.cs 的 JsonOptions 配置（snake_case source-gen 上下文插入 chain 首位），
+// 验证最小 API 请求体绑定是否仍接受 camelCase 键。
+sealed record BindingBody
+{
+    public string? DisplayName { get; init; }
+    public bool? ImageRelay { get; init; }
+    public string? ThinkingStrength { get; init; }
+    public int? MaxOutputTokens { get; init; }
+}
+
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
+[JsonSerializable(typeof(BindingBody))]
+internal sealed partial class SnakeCaseBindingJsonContext : JsonSerializerContext
+{
+}
 
 sealed class StubProvider : IAiProvider
 {

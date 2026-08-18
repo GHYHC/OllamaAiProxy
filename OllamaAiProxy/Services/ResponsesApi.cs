@@ -53,10 +53,10 @@ public static class ResponsesApi
 
             // 图片中继按模型显式 opt-in（与 /v1/chat/completions 一致）：只有勾选了 imageRelay
             // 的模型才走中继；未勾选时不拦截，原样转发给上游（上游可能因 input_image 自行报错）。
+            var overrides = overridesStore.Get(requestedModel);
             JsonDocument? translatedRequest = null;
             if (ResponsesRequestContainsImages(root))
             {
-                var overrides = overridesStore.Get(requestedModel);
                 if (overrides?.ImageRelay == true)
                 {
                     if (!imageVisionRelay.Enabled)
@@ -84,7 +84,10 @@ public static class ResponsesApi
 
             var isStream = TryGetBoolean(root, "stream");
             var effectiveRequest = translatedRequest ?? request;
-            using var upstreamRequest = RewriteModel(effectiveRequest, resolved.Value.UpstreamModel);
+            // 思考强度默认值：模型覆盖里设置了档位且客户端未显式指定时，注入 reasoning.effort。
+            var injected = ThinkingStrengthInjector.Apply(effectiveRequest, overrides?.ThinkingStrength, responses: true);
+            using var upstreamRequest = RewriteModel(injected ?? effectiveRequest, resolved.Value.UpstreamModel);
+            injected?.Dispose();
             translatedRequest?.Dispose();
             await using var upstream = isStream
                 ? await resolved.Value.Provider.StreamResponseAsync(upstreamRequest, cancellationToken)

@@ -31,6 +31,7 @@ OllamaAiProxy 是一个轻量级 ASP.NET Core 代理服务，用来把国内外�
 - 自带浏览器测试页：启动后访问 `http://localhost:11434/`。
 - **`/v1/responses` 说明**：响应原样透传上游（仅重写模型名），能力完全取决于上游是否支持 Responses 接口（如内置工具、`previous_response_id` 多轮续接等）；上游错误原样返回。请求侧支持图片视觉中继（勾选了「图片中继」的模型会把 `input_image` 转成文字再转发）。模型名必须使用 `provider/model` 格式。
 - **图片视觉中继**：可按模型显式启用——勾选后纯文本模型收到图片会先用视觉模型转成文字（OCR + 画面描述）再转发，详见下文「图片视觉中继」一节。
+- **思考强度档位**：可按模型单独设置思考强度默认档位（关闭/低/中/高），客户端未显式指定时代理自动注入 `reasoning_effort`（chat）或 `reasoning.effort`（responses），详见下文「思考强度档位」一节。
 - 可选请求日志：通过 `RequestLogging` 配置启用。
 
 ## 运行要求
@@ -204,6 +205,36 @@ deepseek-v4-pro           上下文 1M / 输出 384K
 > `VisionModel` 必须是一个 capabilities 含 `vision` 的模型。火山方舟 Coding Plan 下的 `doubao-seed-2.1-turbo`、`doubao-seed-2.0-lite`、`kimi-k2.7-code` 等均支持视觉；`glm-5.3`、`deepseek-v4-*` 是纯文本模型，不能用作 `VisionModel`。
 >
 > 识图调用始终走非流式，即使最终请求是流式。若识图失败（视觉模型不可用、Key 无效等），对应图片会被替换为 `(recognition failed)` 占位文本，请求仍会转发，避免会话中断。识图结果在内存中缓存 30 分钟（最多 200 条），同一图片在多轮对话里不会重复识图；缓存键包含聚焦提示，不同意图会分别缓存，失败结果不缓存以便下次重试。单张图片识图有 60 秒超时，对 5xx 和超时会自动重试（最多 2 次、间隔递增）；4xx 等不可重试错误立即放弃。远程 `http(s)` 图片会先由代理主动拉取并转成 data URL 再交给视觉模型（15 秒超时、10MB 上限），这样内网/localhost 等上游不可达的地址也能识图；拉取失败或过大则回退原地址交给上游处理。
+
+## 思考强度档位（按模型默认值）
+
+可为每个模型单独设置「思考强度」档位，作为该模型的默认值。代理转发该模型的 `/v1/chat/completions` 或 `/v1/responses` 请求时，如果客户端**没有显式指定**思考参数，就自动注入对应档位；客户端显式指定时以客户端为准。
+
+### 档位
+
+| 档位 | 取值 | 说明 |
+| --- | --- | --- |
+| 未设置 | （空） | 不注入，透传上游默认行为 |
+| 关闭思考 | `none` | 禁用思考（仅对支持该取值的上游有效，如 DeepSeek） |
+| 低 | `low` | 思考强度低 |
+| 中 | `medium` | 思考强度中 |
+| 高 | `high` | 思考强度高 |
+
+档位词表与 [DeepSeek 思考模式文档](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode/) 的 `reasoning_effort` 取值一致。
+
+### 注入格式
+
+- `/v1/chat/completions`：顶层 `"reasoning_effort": "low" | "medium" | "high" | "none"`。
+- `/v1/responses`：`"reasoning": { "effort": "low" | "medium" | "high" | "none" }`。
+
+> `none`（关闭思考）对 OpenAI o 系等不接受该取值的上游可能报错，请按模型实际支持情况设置。最终能力取决于上游模型厂商，与项目「尽量透传」的既有哲学一致。
+
+### 按模型设置
+
+- 测试页：选中模型 ->「编辑」->「思考强度」下拉选择档位 ->「保存」。
+- 直接调用覆盖接口：`PUT /api/model-overrides/{provider}/{model}`，请求体里设 `"thinkingStrength": "high"`（不设或设 `null` 表示清除）。
+
+设置持久化到 `model-overrides.json`，重启后保留。未设置档位的模型请求行为与原来完全一致。
 
 ## Visual Studio 2026 + GitHub Copilot 接入国内大模型
 

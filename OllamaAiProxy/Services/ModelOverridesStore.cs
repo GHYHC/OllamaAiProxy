@@ -22,6 +22,12 @@ public sealed record ModelOverride
     public bool? Deprecated { get; init; }
     public List<string>? Capabilities { get; init; }
     public bool? ImageRelay { get; init; }
+
+    /// <summary>
+    /// 该模型的思考强度档位默认值，取值见 <see cref="ThinkingStrengthInjector.Levels"/>：
+    /// none（关闭思考）、low（低）、medium（中）、high（高）。为 null 表示未设置，不注入。
+    /// </summary>
+    public string? ThinkingStrength { get; init; }
 }
 
 /// <summary>

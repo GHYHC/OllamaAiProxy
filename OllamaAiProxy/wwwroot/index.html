@@ -355,6 +355,26 @@
       accent-color: var(--brand);
     }
 
+    .detail-row select {
+      width: 100%;
+      padding: 5px 8px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      font: inherit;
+      font-size: 13px;
+      color: var(--text);
+      background: var(--surface);
+      outline: none;
+      height: auto;
+      min-height: 30px;
+      transition: border-color .18s ease, box-shadow .18s ease;
+    }
+
+    .detail-row select:focus {
+      border-color: rgba(37,99,235,.78);
+      box-shadow: 0 0 0 2px rgba(37,99,235,.14);
+    }
+
     .model-detail-header {
       display: flex;
       justify-content: space-between;
@@ -882,6 +902,19 @@
       ]
     };
 
+    // 思考强度档位：取值与上游 reasoning_effort 一致；空值表示未设置（不注入）。
+    const THINKING_STRENGTH_OPTIONS = [
+      { value: "", label: "未设置（上游默认）" },
+      { value: "none", label: "关闭思考" },
+      { value: "low", label: "低" },
+      { value: "medium", label: "中" },
+      { value: "high", label: "高" }
+    ];
+
+    const THINKING_STRENGTH_LABELS = Object.fromEntries(
+      THINKING_STRENGTH_OPTIONS.filter((o) => o.value).map((o) => [o.value, o.label])
+    );
+
     els.baseUrl.textContent = location.origin;
 
     function setRaw(value, isError = false) {
@@ -1009,14 +1042,18 @@
         return;
       }
 
+      state.currentOverrides = null;
       renderModelDetails({ model }, "详情加载中...");
 
       try {
-        const data = await requestJson("/api/show", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model })
-        });
+        const [data] = await Promise.all([
+          requestJson("/api/show", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model })
+          }),
+          loadOverrides(model)
+        ]);
 
         if (requestId !== state.detailRequestId) return;
         renderModelDetails({ model, ...data }, "已加载");
@@ -1069,6 +1106,10 @@
         els.modelDetails.appendChild(createDetailRow("图片中继", formatBool(imageRelay)));
         capabilities.forEach(c => state.knownCapabilities.add(c));
         els.modelDetails.appendChild(createCapabilityRow(capabilities));
+        const thinkingStrength = state.currentOverrides?.thinkingStrength;
+        if (THINKING_STRENGTH_LABELS[thinkingStrength]) {
+          els.modelDetails.appendChild(createDetailRow("思考强度", THINKING_STRENGTH_LABELS[thinkingStrength]));
+        }
         els.modelDetails.appendChild(createDetailRow("更新时间", detail.modified_at || "-"));
       }
     }
@@ -1086,6 +1127,7 @@
       els.modelDetails.appendChild(createCheckboxRow("纯文本", "textOnly", ov.textOnly ?? textOnly ?? true));
       els.modelDetails.appendChild(createCheckboxRow("已废弃", "deprecated", ov.deprecated ?? deprecated ?? false));
       els.modelDetails.appendChild(createCheckboxRow("图片中继", "imageRelay", ov.imageRelay === true));
+      els.modelDetails.appendChild(createSelectRow("思考强度", "thinkingStrength", THINKING_STRENGTH_OPTIONS, ov.thinkingStrength ?? ""));
       const capRow = createCapabilityCheckboxes("能力", "capabilities", state.knownCapabilities, new Set(ov.capabilities ?? capabilities));
       els.modelDetails.appendChild(capRow);
       // 勾选图片中继时：自动勾上 vision 能力、取消「纯文本」（仅作标记，不参与服务端中继判断）。
@@ -1127,6 +1169,24 @@
       input.checked = !!checked;
       input.dataset.field = field;
       row.append(span, input);
+      return row;
+    }
+
+    function createSelectRow(label, field, options, value) {
+      const row = document.createElement("div");
+      row.className = "detail-row";
+      const span = document.createElement("span");
+      span.textContent = label;
+      const select = document.createElement("select");
+      select.dataset.field = field;
+      for (const opt of options) {
+        const option = document.createElement("option");
+        option.value = opt.value;
+        option.textContent = opt.label;
+        if (String(opt.value) === String(value)) option.selected = true;
+        select.appendChild(option);
+      }
+      row.append(span, select);
       return row;
     }
     function createCapabilityCheckboxes(label, field, allCapabilities, selectedSet) {
@@ -1218,6 +1278,12 @@
         const checked = [];
         capContainer.querySelectorAll("input[type=\u0027checkbox\u0027]:checked").forEach(cb => checked.push(cb.value));
         ov["capabilities"] = checked.length > 0 ? checked : null;
+      }
+
+      // Collect thinking-strength level; empty value clears the setting (null)
+      const thinkingSelect = els.modelDetails.querySelector('select[data-field="thinkingStrength"]');
+      if (thinkingSelect) {
+        ov["thinkingStrength"] = thinkingSelect.value || null;
       }
 
       setRaw("保存中...");

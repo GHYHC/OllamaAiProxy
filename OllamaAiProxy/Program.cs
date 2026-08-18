@@ -190,13 +190,13 @@ app.MapPost("/v1/chat/completions", async (HttpContext context, IAiProviderRegis
             return Error($"model '{requestedModel}' not found", StatusCodes.Status404NotFound);
 
         var provider = resolved.Value.Provider;
+        var overrides = overridesStore.Get(requestedModel);
         // 图片中继按模型显式 opt-in：只有在该模型覆盖值里勾选了 imageRelay 才走中继
         // （勾选时 vision 仅作标记，不参与判断）；未勾选时不拦截，原样转发给上游
         // （视觉模型原生支持图片；纯文本模型上游可能因 image_url 自行报错）。
         JsonDocument? translatedRequest = null;
         if (RequestContainsImages(root))
         {
-            var overrides = overridesStore.Get(requestedModel);
             if (overrides?.ImageRelay == true)
             {
                 if (!imageVisionRelay.Enabled)
@@ -218,7 +218,10 @@ app.MapPost("/v1/chat/completions", async (HttpContext context, IAiProviderRegis
 
         var effectiveRequest = translatedRequest ?? request;
         var isStream = TryGetBoolean(effectiveRequest.RootElement, "stream");
-        using var upstreamRequest = RewriteModel(effectiveRequest, resolved.Value.UpstreamModel);
+        // 思考强度默认值：模型覆盖里设置了档位且客户端未显式指定时，注入 reasoning_effort。
+        var injected = ThinkingStrengthInjector.Apply(effectiveRequest, overrides?.ThinkingStrength, responses: false);
+        using var upstreamRequest = RewriteModel(injected ?? effectiveRequest, resolved.Value.UpstreamModel);
+        injected?.Dispose();
         translatedRequest?.Dispose();
         await using var response = isStream
             ? await provider.StreamChatCompletionAsync(upstreamRequest, context.RequestAborted)
