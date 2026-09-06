@@ -126,15 +126,17 @@ aliyun/qwen-max
 
 火山方舟 Coding Plan 提供兼容 OpenAI 的聊天补全接口，Base URL 必须使用 `https://ark.cn-beijing.volces.com/api/coding/v3`（请勿使用 `/api/v3`，否则不消耗套餐额度并会产生额外费用）。模型列表固定为 Coding Plan 支持的模型（来源：方舟 Coding Plan 文档），不再从 `/models` 接口拉取，避免误用非套餐模型。聊天补全走 `POST /chat/completions`，`model` 字段直接使用下列 Model Name。
 
-内置模型（共 8 个，均支持函数调用与深度思考；模型名前缀为 `VolcengineCodingPlan/`，例如 `VolcengineCodingPlan/doubao-seed-2.1-turbo`）：
+内置模型（共 10 个，均支持函数调用与深度思考；模型名前缀为 `VolcengineCodingPlan/`，例如 `VolcengineCodingPlan/doubao-seed-2.1-turbo`）：
 
 ```text
 ark-code-latest           控制台路由（上下文/输出随所选模型而定）
 doubao-seed-2.1-turbo     上下文 256K / 输出 64K / 视觉
+doubao-seed-evolving      上下文 1M / 输出 256K / 视觉
 doubao-seed-2.0-lite      上下文 256K / 输出 128K / 视觉
 minimax-m3                上下文 1M / 输出 128K / 视觉
 kimi-k2.7-code            上下文 256K / 输出 32K / 视觉
 glm-5.3                   上下文 1M / 输出 128K
+glm-5.3-flash             上下文 1M / 输出 128K / 视觉
 deepseek-v4-flash         上下文 1M / 输出 384K
 deepseek-v4-pro           上下文 1M / 输出 384K
 ```
@@ -202,7 +204,7 @@ deepseek-v4-pro           上下文 1M / 输出 384K
 | `Enabled` | 是否启用中继。`true` 时若未配置 `VisionModel` 仍不生效（回退到拒绝图片）。 | `true` |
 | `VisionModel` | 用于识图的视觉模型，使用 `provider/model` 格式，例如 `VolcengineCodingPlan/doubao-seed-2.0-lite`、`VolcengineCodingPlan/doubao-seed-2.1-turbo`、`OpenAI/gpt-4o`。留空则中继关闭。 | 空 |
 
-> `VisionModel` 必须是一个 capabilities 含 `vision` 的模型。火山方舟 Coding Plan 下的 `doubao-seed-2.1-turbo`、`doubao-seed-2.0-lite`、`kimi-k2.7-code` 等均支持视觉；`glm-5.3`、`deepseek-v4-*` 是纯文本模型，不能用作 `VisionModel`。
+> `VisionModel` 必须是一个 capabilities 含 `vision` 的模型。火山方舟 Coding Plan 下的 `doubao-seed-2.1-turbo`、`doubao-seed-2.0-lite`、`doubao-seed-evolving`、`glm-5.3-flash`、`kimi-k2.7-code` 等均支持视觉；`glm-5.3`、`deepseek-v4-*` 是纯文本模型，不能用作 `VisionModel`。
 >
 > 识图调用始终走非流式，即使最终请求是流式。若识图失败（视觉模型不可用、Key 无效等），对应图片会被替换为 `(recognition failed)` 占位文本，请求仍会转发，避免会话中断。识图结果在内存中缓存 30 分钟（最多 200 条），同一图片在多轮对话里不会重复识图；缓存键包含聚焦提示，不同意图会分别缓存，失败结果不缓存以便下次重试。单张图片识图有 60 秒超时，对 5xx 和超时会自动重试（最多 2 次、间隔递增）；4xx 等不可重试错误立即放弃。远程 `http(s)` 图片会先由代理主动拉取并转成 data URL 再交给视觉模型（15 秒超时、10MB 上限），这样内网/localhost 等上游不可达的地址也能识图；拉取失败或过大则回退原地址交给上游处理。
 

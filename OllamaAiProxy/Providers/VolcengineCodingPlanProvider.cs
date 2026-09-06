@@ -15,7 +15,7 @@ public sealed class VolcengineCodingPlanProvider : IAiProvider
 {
     private const string ApiKeyEnvironmentVariable = "VOLCENGINE_CODING_PLAN_API_KEY";
     private const long ModelCreated = 1_776_988_800;
-    private const string ModelModifiedAt = "2026-08-06T00:00:00Z";
+    private const string ModelModifiedAt = "2026-08-31T00:00:00Z";
 
     private readonly HttpClient _httpClient;
     private readonly VolcengineCodingPlanOptions _options;
@@ -146,10 +146,11 @@ public sealed class VolcengineCodingPlanProvider : IAiProvider
         return new StringContent(json, Encoding.UTF8, "application/json");
     }
 
-    // Coding Plan 支持的模型（来源：方舟 Coding Plan 文档「支持的模型」）。
+    // Coding Plan 支持的模型（来源：方舟 Coding Plan 文档「支持的模型」，2026-08-31 核对）。
     // 上下文长度/最大输出按官方文档整理；视觉/思考能力按文档说明标注。
-    // 已移除文档标注「即将下线」的模型：doubao-seed-2.0-code、doubao-seed-2.0-pro、
+    // 已移除文档标注「即将下线/已下线」的模型：doubao-seed-2.0-code、doubao-seed-2.0-pro、
     // doubao-seed-code、minimax-m2.7、kimi-k2.6、glm-5.2。
+    // 注：Auto 模式仅可通过控制台切换，Model Name 不支持配置，故不列入。
     private static IReadOnlyList<AiModel> GetKnownModels(string family)
     {
         return new[]
@@ -158,10 +159,12 @@ public sealed class VolcengineCodingPlanProvider : IAiProvider
             // 这里取保守估值，实际以上游为准。
             CreateModel("ark-code-latest", "Ark Code Latest", 262144, 65536, vision: false, family),
             CreateModel("doubao-seed-2.1-turbo", "Doubao Seed 2.1 Turbo", 262144, 65536, vision: true, family),
+            CreateModel("doubao-seed-evolving", "Doubao Seed Evolving", 1048576, 262144, vision: true, family),
             CreateModel("doubao-seed-2.0-lite", "Doubao Seed 2.0 Lite", 262144, 131072, vision: true, family),
             CreateModel("minimax-m3", "MiniMax M3", 1048576, 131072, vision: true, family),
             CreateModel("kimi-k2.7-code", "Kimi K2.7 Code", 262144, 32768, vision: true, family),
             CreateModel("glm-5.3", "GLM 5.3", 1048576, 131072, vision: false, family),
+            CreateModel("glm-5.3-flash", "GLM 5.3 Flash", 1048576, 131072, vision: true, family),
             CreateModel("deepseek-v4-flash", "DeepSeek V4 Flash", 1048576, 393216, vision: false, family),
             CreateModel("deepseek-v4-pro", "DeepSeek V4 Pro", 1048576, 393216, vision: false, family)
         };
