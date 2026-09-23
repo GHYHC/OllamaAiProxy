@@ -146,9 +146,10 @@ public sealed class VolcengineCodingPlanProvider : IAiProvider
         return new StringContent(json, Encoding.UTF8, "application/json");
     }
 
-    // Coding Plan 支持的模型（来源：方舟 Coding Plan 文档「支持的模型」，2026-09-18 核对）。
-    // 上下文长度/最大输出按官方文档整理；视觉/思考能力按文档说明标注。
-    // 已移除文档标注「即将下线/已下线」的模型：doubao-seed-2.0-code、doubao-seed-2.0-pro、
+    // Coding Plan 支持的模型（来源：方舟 Coding Plan 文档「支持的模型」，2026-09-23 核对）。
+    // 上下文长度/最大输出按官方文档整理；视觉/思考能力按文档及模型广场详情标注。
+    // 已移除文档标注「即将下线/已下线」的模型：doubao-seed-2.1-turbo、doubao-seed-2.0-lite（2026-10-09 服务下线，
+    // 建议迁移至 doubao-seed-2.1-pro / doubao-seed-2.1-lite）、doubao-seed-2.0-code、doubao-seed-2.0-pro、
     // doubao-seed-code、minimax-m2.7、kimi-k2.6、glm-5.2。
     // 注：Auto 模式仅可通过控制台切换，Model Name 不支持配置，故不列入。
     private static IReadOnlyList<AiModel> GetKnownModels(string family)
@@ -158,9 +159,10 @@ public sealed class VolcengineCodingPlanProvider : IAiProvider
             // ark-code-latest 为控制台路由别名，使用控制台中当前选定的模型；上下文/输出随所选模型而定，
             // 这里取保守估值，实际以上游为准。
             CreateModel("ark-code-latest", "Ark Code Latest", 262144, 65536, vision: false, family),
-            CreateModel("doubao-seed-2.1-turbo", "Doubao Seed 2.1 Turbo", 262144, 65536, vision: true, family),
+            CreateModel("doubao-seed-2.1-pro", "Doubao Seed 2.1 Pro", 1048576, 262144, vision: true, family),
+            CreateModel("doubao-seed-2.1-lite", "Doubao Seed 2.1 Lite", 1048576, 262144, vision: true, family),
+            CreateModel("doubao-seed-2.0-mini", "Doubao Seed 2.0 Mini", 262144, 131072, vision: true, family),
             CreateModel("doubao-seed-evolving", "Doubao Seed Evolving", 1048576, 262144, vision: true, family),
-            CreateModel("doubao-seed-2.0-lite", "Doubao Seed 2.0 Lite", 262144, 131072, vision: true, family),
             CreateModel("minimax-m3", "MiniMax M3", 1048576, 131072, vision: true, family),
             CreateModel("kimi-k2.7-code", "Kimi K2.7 Code", 262144, 32768, vision: true, family),
             // kimi-k2.8-preview 综合性能接近 kimi-k3、思考效率更高，最大输出可达 1024k。
@@ -169,6 +171,7 @@ public sealed class VolcengineCodingPlanProvider : IAiProvider
             CreateModel("kimi-k3", "Kimi K3", 1048576, 131072, vision: true, family),
             CreateModel("glm-5.3", "GLM 5.3", 1048576, 131072, vision: false, family),
             CreateModel("glm-5.3-flash", "GLM 5.3 Flash", 1048576, 131072, vision: true, family),
+            CreateModel("deepseek-v4.1-flash", "DeepSeek V4.1 Flash", 1048576, 393216, vision: true, family),
             CreateModel("deepseek-v4-flash", "DeepSeek V4 Flash", 1048576, 393216, vision: false, family),
             CreateModel("deepseek-v4-pro", "DeepSeek V4 Pro", 1048576, 393216, vision: false, family)
         };

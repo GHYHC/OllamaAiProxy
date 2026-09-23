@@ -12,7 +12,7 @@ public sealed class ImageVisionRelayOptions
 
     /// <summary>
     /// 用于识图的视觉模型，使用 provider/model 外部格式，
-    /// 例如 VolcengineCodingPlan/doubao-seed-2.0-lite。为空时中继不生效。
+    /// 例如 VolcengineCodingPlan/doubao-seed-2.1-pro。为空时中继不生效。
     /// </summary>
     public string VisionModel { get; set; } = "";
 }
